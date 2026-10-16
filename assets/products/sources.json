@@ -1,0 +1,20 @@
+{
+  "Lemon Yogurt": {
+    "file": "lemon-yogurt.jpg",
+    "source": "https://www.instacart.com/products/75351",
+    "image_url": "https://www.instacart.com/image-server/1200x1200/www.instacart.com/assets/domains/product-image/file/large_97cf775b-0388-4aae-98ed-cbb06252dd11.jpg",
+    "note": "Representative photo matched by product name; historical brand and package size are not verified."
+  },
+  "Blueberry Yoghurt": {
+    "file": "blueberry-yogurt.jpg",
+    "source": "https://www.instacart.com/products/3239137",
+    "image_url": "https://www.instacart.com/image-server/1200x1200/www.instacart.com/assets/domains/product-image/file/large_130b253e-b580-4bf0-8514-10795c0f4854.jpg",
+    "note": "Representative photo matched by product name; historical brand and package size are not verified."
+  },
+  "Original No Pulp 100% Florida Orange Juice": {
+    "file": "orange-juice.jpg",
+    "source": "https://www.instacart.com/products/16410517",
+    "image_url": "https://www.instacart.com/image-server/1200x1200/www.instacart.com/assets/domains/product-image/file/large_d26e88bd-0e04-4faf-949c-91df6fb4c65d.jpeg",
+    "note": "Representative photo matched by product name; historical brand and package size are not verified."
+  }
+}

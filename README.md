@@ -106,6 +106,25 @@ python scripts/data_quality.py
 
 ## Development Progress
 
+### Local frontend preview
+
+With your virtual environment activated, run:
+
+```bash
+python -m pip install -r requirements-preview.txt
+python scripts/build_db.py --dataset sample
+python -m streamlit run main.py
+```
+
+Open the localhost URL printed in the terminal. The preview includes a demo
+customer selector, historical order summaries, product photos, and a chat
+placeholder. AI agents are not connected. Customer `5117` has photos for all
+three products in their latest sample order.
+
+Photos are representative; the dataset does not verify historical brands or
+package sizes. Photo sources are recorded in `assets/products/sources.json`.
+Other products display a neutral placeholder when no photo is available.
+
 - [x] Create GitHub repository
 - [x] Set up Python environment
 - [x] Download Instacart dataset
