@@ -1,12 +1,9 @@
 """Run with: streamlit run main.py"""
 
-from html import escape
-
 import duckdb
 import streamlit as st
 
 from db.queries import DB, get_customer_orders, get_order_products
-from product_thumbnails import product_thumbnail
 
 st.set_page_config(page_title="Cartside · Customer care", page_icon="🛒", layout="wide")
 st.markdown("""
@@ -16,7 +13,7 @@ html, body, .stApp, [data-testid="stMarkdownContainer"] {font-family:'DM Sans',s
 .stApp {background:radial-gradient(ellipse at 75% 0%,#292929 0%,#141414 52%);color:#f1f1ef;}
 [data-testid="stHeader"] {background:transparent;}
 [data-testid="stSidebar"] {background:#191919;border-right:1px solid #303030;}
-.block-container {max-width:1180px;padding-top:3.8rem;}
+.block-container {max-width:1040px;padding-top:3.8rem;padding-bottom:3rem;}
 h1,h2,h3,h4 {color:#f1f1ef;letter-spacing:-.035em;}
 .hero {font-size:clamp(30px,4vw,46px);font-weight:600;line-height:1.2;letter-spacing:-1.8px;margin:0 0 12px;}
 .badge {display:inline-block;border:1px solid #465448;background:#252e27;border-radius:30px;padding:6px 13px;font-size:12px;color:#b8cfae;}
@@ -34,11 +31,6 @@ h1,h2,h3,h4 {color:#f1f1ef;letter-spacing:-.035em;}
 [data-testid="stChatInput"]:focus-within {border-color:#9eb695;}
 [data-testid="stChatMessageAvatarAssistant"] {background:#344036;color:#c2d7b8;}
 [data-testid="stChatMessageAvatarUser"] {background:#383838;}
-.product {display:flex;align-items:center;gap:12px;padding:14px 0;border-bottom:1px solid #373737;font-size:14px;line-height:1.5;}
-.product:last-child {border-bottom:0;}
-.product-image {flex-shrink:0;width:68px;height:68px;border-radius:12px;object-fit:contain;border:1px solid #41433d;background:#fff;padding:5px;box-sizing:border-box;}
-.product-photo-link {flex-shrink:0;display:flex;}
-.photo-missing {display:grid;place-items:center;background:#292929;color:#888;font-size:20px;}
 @media(max-width:640px) {.block-container {padding-top:2rem;} [data-testid="stMetric"] {padding:12px;} [data-testid="stMetricValue"] {font-size:24px;}}
 </style>
 """, unsafe_allow_html=True)
@@ -81,41 +73,35 @@ middle.metric("Latest order", str(orders[0]["order_id"]) if orders else "—")
 right.metric("Products", len(latest_items))
 st.write("")
 
-chat, details = st.columns([2.2, 1], gap="large")
-with chat:
-    st.subheader("Chat")
-    suggestions = ["Show my order history", "What was in my latest order?"]
-    pending = None
-    buttons = st.columns(2)
-    for column, suggestion in zip(buttons, suggestions):
-        if column.button(suggestion, width="stretch"):
-            pending = suggestion
-    if not st.session_state.messages:
-        with st.chat_message("assistant", avatar="🛒"):
-            st.write("Ask about your orders.")
-    typed = st.chat_input("Ask about your orders…")
-    question = typed or pending
-    if question:
-        st.session_state.messages.append({"role": "user", "text": question})
-        response = {"text": "AI replies will appear here once connected."}
-        st.session_state.messages.append({"role": "assistant", **response})
-    for message in st.session_state.messages:
-        with st.chat_message(message["role"], avatar="🛒" if message["role"] == "assistant" else "👤"):
-            st.write(message["text"])
-            if message.get("rows"):
-                st.dataframe(message["rows"], hide_index=True, width="stretch")
+st.subheader("Chat")
+suggestions = ["Show my order history", "What was in my latest order?"]
+pending = None
+buttons = st.columns(2)
+for column, suggestion in zip(buttons, suggestions):
+    if column.button(suggestion, width="stretch"):
+        pending = suggestion
+if not st.session_state.messages:
+    with st.chat_message("assistant", avatar="🛒"):
+        st.write("Ask about your orders.")
+question = st.session_state.pop("submitted_question", None) or pending
+if question:
+    st.session_state.messages.append({"role": "user", "text": question})
+    response = {"text": "AI replies will appear here once connected."}
+    st.session_state.messages.append({"role": "assistant", **response})
+for message in st.session_state.messages:
+    with st.chat_message(message["role"], avatar="🛒" if message["role"] == "assistant" else "👤"):
+        st.write(message["text"])
+        if message.get("rows"):
+            st.dataframe(message["rows"], hide_index=True, width="stretch")
 
-with details:
-    with st.container(border=True):
-        st.markdown("#### Latest basket")
-        st.caption(f"ORDER #{orders[0]['order_id']}" if orders else "No orders available")
-        st.caption("Photos are representative.")
-        for item in latest_items[:5]:
-            st.markdown(f'<div class="product">{product_thumbnail(item["product_name"])}<span>{escape(item["product_name"])}</span></div>', unsafe_allow_html=True)
-        if len(latest_items) > 5:
-            with st.expander(f"+ {len(latest_items) - 5} more"):
-                for item in latest_items[5:]:
-                    st.markdown(f'<div class="product">{product_thumbnail(item["product_name"])}<span>{escape(item["product_name"])}</span></div>', unsafe_allow_html=True)
+
+def submit_question():
+    st.session_state.submitted_question = st.session_state.chat_composer
+
+
+st.chat_input("Ask about your orders…", key="chat_composer", on_submit=submit_question)
+
+with st.sidebar:
     with st.expander("Order history"):
         st.dataframe(
             [{"Order": o["order_id"], "Sequence": o["order_number"]} for o in orders],

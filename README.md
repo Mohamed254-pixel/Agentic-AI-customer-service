@@ -117,13 +117,13 @@ python -m streamlit run main.py
 ```
 
 Open the localhost URL printed in the terminal. The preview includes a demo
-customer selector, historical order summaries, product photos, and a chat
-placeholder. AI agents are not connected. Customer `5117` has photos for all
-three products in their latest sample order.
+customer selector, historical order summaries, and a wide chat placeholder
+with a bottom input bar. Order history is available in the sidebar.
+AI agents are not connected.
 
-Photos are representative; the dataset does not verify historical brands or
-package sizes. Photo sources are recorded in `assets/products/sources.json`.
-Other products display a neutral placeholder when no photo is available.
+Product photo assets are retained for future use but are not displayed in the
+chat layout. Photos are representative; the dataset does not verify historical
+brands or package sizes. Sources are recorded in `assets/products/sources.json`.
 
 - [x] Create GitHub repository
 - [x] Set up Python environment
