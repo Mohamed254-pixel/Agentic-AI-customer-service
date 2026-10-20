@@ -23,7 +23,7 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, StateGraph
 
 from agents.order_agent import handle_order_question
-from agents.product_agent import recommend_products
+from agents.product_agent import is_product_reference, normalize_request, parse_exclusions, product_turn
 from agents.refund_agent import handle_refund_question
 from agents.voice import CHAT_STYLE
 
@@ -39,6 +39,14 @@ class RouterState(TypedDict, total=False):
     product_question: str
     effective_question: str
     mode: str
+    active_route: str
+    excluded_products: list[str]
+    suggested_product_ids: list[int]
+    last_suggested_product_ids: list[int]
+    seed_product_id: int | None
+    recommendations: list[dict[str, Any]]
+    recommendation_method: str
+    matched_product: str | None
 
 
 ROUTER_PROMPT = """You route requests for an Instacart customer-service demo.
@@ -47,11 +55,15 @@ Return exactly one label:
 - ORDER_HISTORY: questions about past orders or items in an order
 - PRODUCT_RECOMMENDATION: grocery product suggestions or products bought together
 - CUSTOMER_SUPPORT: refunds, policies, complaints, or general support questions
-- SMALLTALK: greetings, thanks, goodbyes, introductory questions, or ordinary conversation
+- SMALLTALK: greetings, thanks, goodbyes, introductory questions, or general knowledge/conversation outside the grocery service tasks
 
 The dataset does not contain live delivery tracking, prices, payment data,
 quantities, customer addresses, or actual refund processing. Use CUSTOMER_SUPPORT
 for those questions so the system can explain the limitation or policy.
+Product rejections such as "nah give me sum else", "no milk and bananas",
+"not those", and "what about apples?" continue product recommendations. They
+are not refund requests. Only switch to support for actual support intent.
+Use the active topic for short follow-ups, even after greetings or thanks.
 Return only the label.
 """
 
@@ -87,39 +99,93 @@ def _normalise_route(value: str) -> str:
     ):
         if route in value:
             return route
-    return "CUSTOMER_SUPPORT"
+    return "SMALLTALK"
+
+
+def _explicit_route(question: str):
+    """Prioritize actual service requests, not generic words like 'wrong'."""
+    text = normalize_request(question)
+    if re.search(
+        r"\b(refund(?:ed|s)?|returns?|returned|exchange|damaged|spoiled|cancel(?:led|ation)?|"
+        r"complaint|policy|charged|billing|tracking|track|delivery|shipped|payment)\b"
+        r"|\bmoney back\b|\b(wrong|missing)\s+(order|item|items|delivery|product)\b"
+        r"|\b(order|item|delivery)\b.*\b(wrong|missing)\b"
+        r"|\bmy\b.{1,60}\b(missing|never arrived)\b", text,
+    ):
+        return "CUSTOMER_SUPPORT"
+    if re.search(r"\b(recommend(?:ation|ations|s)?|suggest(?:ion|ions|s)?|similar|grocery|groceries|products?)\b"
+                 r"|\bwhat should i (buy|get)\b", text):
+        return "PRODUCT_RECOMMENDATION"
+    if re.search(r"\b(order|orders|purchased|bought)\b"
+                 r"|\bdid i (buy|order|purchase)\b|\b(first|initial) (order|purchase)\b", text):
+        return "ORDER_HISTORY"
+    return None
+
+
+def _smalltalk(question: str):
+    return bool(re.fullmatch(
+        r"(?:hi|hello|hey|thanks|thank you|thx|ty|bye|goodbye|ok|okay|cool|nice|alright|aight|ight|how are you)(?: yo| bro| fam)?[!.?\s]*",
+        normalize_request(question).strip(),
+    ))
+
+
+def _general_request(question: str):
+    text = normalize_request(question)
+    # General questions must be able to leave a previous shopping conversation.
+    return bool(re.search(
+        r"\b(python|javascript|programming|photosynthesis|math|algebra|homework|movie|movies|music|song|songs|poem|joke|capital|weather|news)\b"
+        r"|^(?:explain|write|solve|translate|summarize|tell me about)\b"
+        r"|^what(?: is|'s| are) (?!my\b|in\b|your (?:refund|return|policy))", text,
+    ))
+
+
+def _product_followup(question: str):
+    text = normalize_request(question)
+    return bool(parse_exclusions(question)[1] or re.search(
+        r"\b(nah|nope|no|else|different|another|more|other|those|these|them|that|it|one|ones|instead|gimme)\b"
+        r"|\b(what|how) about\b|\bgive me\b|\b(don't|not) (?:like|want)\b", text,
+    ))
+
+
+def _context_route(question: str, state):
+    route = _explicit_route(question)
+    general_domain = re.search(
+        r"\b(python|javascript|programming|photosynthesis|math|algebra|homework|movie|movies|music|song|songs|poem|joke|capital|weather|news)\b",
+        normalize_request(question),
+    )
+    if (_general_request(question) and route not in {"CUSTOMER_SUPPORT", "ORDER_HISTORY"}
+            and (route != "PRODUCT_RECOMMENDATION" or general_domain)):
+        return "SMALLTALK"
+    if route:
+        return route
+    if _smalltalk(question):
+        return "SMALLTALK"
+    topic = state.get("active_route", state.get("route"))
+    # Substantive follow-ups stay with their specialist. A thanks/greeting
+    # doesn't erase this topic or product exclusions/history.
+    if topic == "PRODUCT_RECOMMENDATION" and _product_followup(question):
+        return topic
+    text = normalize_request(question)
+    if (len(text.split()) <= 5 and not re.match(r"(?:what|why|who|when|where|how|can|could|explain|tell|write|solve)\b", text)
+            and is_product_reference(question)):
+        return "PRODUCT_RECOMMENDATION"
+    if topic == "ORDER_HISTORY" and re.search(
+        r"\b(that|those|them|it|again|first|last|latest|earliest|oldest|initial|one|ones)\b", normalize_request(question)
+    ):
+        return topic
+    if topic == "SMALLTALK" and re.search(r"\b(more|that|it|those|explain|why|how)\b", text):
+        return "SMALLTALK"
+    if topic == "CUSTOMER_SUPPORT" and re.search(
+        r"\b(it|that|unused|used|sale|days|ago|arrived|item)\b", normalize_request(question)
+    ):
+        return topic
+    if parse_exclusions(question)[1]:
+        return "PRODUCT_RECOMMENDATION"
+    return None
 
 
 def _keyword_route(question: str) -> str:
-    """Provide a local fallback when no OpenAI key is configured."""
-
-    text = question.lower()
-    # Order matters: real requests are checked before greetings, so
-    # "Hello, I want a refund" is not treated as small talk.
-    if re.search(
-        r"\b(refund|refunded|return|returned|damaged|missing|wrong|cancel|"
-        r"complaint|policy|charged)\b",
-        text,
-    ):
-        return "CUSTOMER_SUPPORT"
-    # An explicit ask for suggestions wins over incidental order wording
-    # ("recommend something based on my last order").
-    if re.search(r"\b(recommend|suggest|similar)\b", text):
-        return "PRODUCT_RECOMMENDATION"
-    # Past-purchase wording ("what did I buy last time?") is order history.
-    if re.search(
-        r"\b(order|orders|purchased|bought|history|latest|last time|first|earliest|oldest|initial)\b"
-        r"|\bdid i (buy|order|purchase)\b",
-        text,
-    ):
-        return "ORDER_HISTORY"
-    if re.search(
-        r"\b(product|grocery|groceries)\b|\bwhat should i (buy|get)\b", text
-    ):
-        return "PRODUCT_RECOMMENDATION"
-    if re.search(r"\b(hi|hello|hey|thanks|thank you|bye|goodbye)\b", text):
-        return "SMALLTALK"
-    return "CUSTOMER_SUPPORT"
+    return _context_route(question, {}) or "SMALLTALK"
 
 
 
@@ -137,37 +203,30 @@ def build_router(model=None, debug: bool = False):
     def choose_route(state: RouterState):
         question = _last_user_message(state)
         effective = question
-        previous_route = state.get("route")
+        topic = state.get("active_route", state.get("route"))
+        forced = _context_route(question, state)
         changes_order = re.search(r"\b(first|earliest|oldest|initial|latest|last|recent)\b", question.lower())
-        if not changes_order and re.search(r"\b(that|those|them|it|else|again)\b", question.lower()):
-            if previous_route == "ORDER_HISTORY" and state.get("order_id") and not re.search(r"\border\s*#?\s*\d+", question.lower()):
-                effective += f" (order {state['order_id']})"
-            elif previous_route == "PRODUCT_RECOMMENDATION" and state.get("product_question"):
-                effective += " (previous product request: " + state["product_question"] + ")"
+        if (forced == "ORDER_HISTORY" and topic == "ORDER_HISTORY" and not changes_order
+                and state.get("order_id") and re.search(r"\b(that|those|them|it|again)\b", question.lower())
+                and not re.search(r"\border\s*#?\s*\d+", question.lower())):
+            effective += f" (order {state['order_id']})"
         mode = "Local demo" if model is None else "OpenAI"
         if model is None:
-            route = _keyword_route(effective)
+            route = forced or _keyword_route(effective)
         else:
             try:
                 result = model.invoke([
-                    SystemMessage(content=ROUTER_PROMPT),
+                    SystemMessage(content=ROUTER_PROMPT + f"\nActive topic: {topic or 'none'}"),
                     *state.get("messages", []),
                 ])
-                route = _normalise_route(_message_text(result))
-                # Explicit requests win over a model distracted by earlier turns.
-                if re.search(
-                    r"\b(refund|return|damaged|missing|wrong|cancel|policy|charged|"
-                    r"recommend|suggest|similar|order|orders|purchased|bought|history|first|earliest|oldest|initial)\b",
-                    question.lower(),
-                ):
-                    route = _keyword_route(question)
+                route = forced or _normalise_route(_message_text(result))
             except Exception:
                 mode = "Local fallback (OpenAI unavailable)"
-                # Network, rate-limit, or key problems: use the local rules.
-                route = _keyword_route(effective)
+                route = forced or _keyword_route(effective)
         if debug:
             print(f"Router selected: {route}")
-        return {"route": route, "effective_question": effective, "mode": mode}
+        return {"route": route, "effective_question": effective, "mode": mode,
+                "active_route": topic if route == "SMALLTALK" and _smalltalk(question) else route}
 
     def conversational_order(state, result):
         """Let the model explain retrieved facts, with a safe database fallback."""
@@ -211,33 +270,48 @@ def build_router(model=None, debug: bool = False):
 
     def product_node(state: RouterState):
         try:
-            answer = recommend_products(state.get("effective_question", _last_user_message(state)), use_ai=model is not None)
-        except FileNotFoundError as exc:
-            # The product agent raises this when the DuckDB file isn't built yet.
-            answer = str(exc)
+            result = product_turn(_last_user_message(state), state,
+                                  messages=state.get("messages", []), model=model,
+                                  use_ai=model is not None)
         except Exception:
-            answer = "I couldn't load product recommendations right now. Please try again later."
-        return {"messages": [AIMessage(content=answer)], "product_question": state.get("effective_question", _last_user_message(state)), "mode": "Local fallback (OpenAI unavailable)" if "AI explanation unavailable" in answer else state.get("mode", "Local demo")}
+            return {"messages": [AIMessage(content="I couldn't load grocery suggestions right now. Please try again.")]}
+        updates = {key: value for key, value in result.items() if key not in {"text", "ai_fallback"}}
+        return {**updates, "messages": [AIMessage(content=result["text"])],
+                "mode": "Local fallback (OpenAI unavailable)" if result["ai_fallback"] else state.get("mode", "Local demo")}
 
     def support_node(state: RouterState):
         answer = handle_refund_question(state.get("messages", []), model=model)
         return {"messages": [AIMessage(content=answer)], "mode": "Local fallback (OpenAI unavailable)" if "OpenAI is unavailable" in answer else state.get("mode", "Local demo")}
 
     def smalltalk_node(state: RouterState):
-        no_model_answer = "Hey! What can I help you with?"
+        text = normalize_request(_last_user_message(state))
+        if re.fullmatch(r"(?:thanks|thank you|thx|ty)(?: yo| bro| fam)?[!.?\s]*", text):
+            no_model_answer = "You're welcome!"
+        elif _smalltalk(text):
+            no_model_answer = "Hey! What can I help you with?"
+        else:
+            no_model_answer = "I'm in demo mode, so I can look up groceries and orders but can't answer general questions yet."
+        response_mode = state.get("mode", "Local demo")
         if model is None:
             answer = no_model_answer
         else:
             try:
                 result = model.invoke([
                     SystemMessage(content=CHAT_STYLE + "\nYou can help with historical grocery orders, "
-                        "product suggestions, and simulated refund questions. Mention these only when asked."),
+                        "product suggestions, and simulated refund questions. Mention these only when asked. "
+                        "You can also answer general questions, explain ideas, help with writing or coding, "
+                        "and chat normally. Use simple English and keep it short unless asked for detail. "
+                        "You have no live web search: say when you cannot verify current information. "
+                        "Do not invent Cartside products, customer records, prices, or actions. "
+                        "If a question needs a product lookup, ask which grocery item rather than inventing a store recommendation."),
                     *state.get("messages", []),
                 ])
                 answer = _message_text(result)
+                response_mode = "OpenAI"
             except Exception:
-                answer = no_model_answer
-        return {"messages": [AIMessage(content=answer)]}
+                answer = "I couldn't reach AI chat just now. I can still help with the sample orders and groceries."
+                response_mode = "Local fallback (OpenAI unavailable)"
+        return {"messages": [AIMessage(content=answer)], "mode": response_mode}
 
     graph = StateGraph(RouterState)
     graph.add_node("Router", choose_route)

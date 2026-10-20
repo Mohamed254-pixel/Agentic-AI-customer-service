@@ -138,7 +138,7 @@ def test_order_voice_uses_history_and_rejects_invented_details(invent_number):
 
 def test_explicit_recommendation_overrides_wrong_model_route(monkeypatch):
     from agents import router
-    monkeypatch.setattr(router, 'recommend_products', lambda *args, **kwargs: 'Database suggestions for bananas')
+    monkeypatch.setattr(router, 'product_turn', lambda *args, **kwargs: {'text': 'Database suggestions for bananas', 'ai_fallback': False})
     result = ask(build_router(model=FakeModel()), 'Recommend bananas')
     assert result['route'] == 'PRODUCT_RECOMMENDATION'
     assert result['messages'][-1].content == 'Database suggestions for bananas'

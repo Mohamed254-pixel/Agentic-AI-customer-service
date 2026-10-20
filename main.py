@@ -76,7 +76,7 @@ st.markdown(f'<div class="topline"><span class="topline-title">Your grocery assi
 
 pending = None
 if not st.session_state.messages:
-    st.markdown('<div class="welcome"><div class="welcome-mark">✳</div><h1>A little help with<br>your everyday groceries.</h1><p>Explore your orders. Find your next favorite.</p></div>', unsafe_allow_html=True)
+    st.markdown('<div class="welcome"><div class="welcome-mark">✳</div><h1>A little help with<br>your everyday groceries.</h1><p>Groceries, orders, or something else. Just ask.</p></div>', unsafe_allow_html=True)
     with st.container(key="starters"):
         columns = st.columns(3)
         prompts = [
@@ -121,4 +121,4 @@ def submit_question():
     st.session_state.submitted_question = st.session_state.chat_composer
 
 
-st.chat_input("Ask Cartside anything about your groceries…", key="chat_composer", on_submit=submit_question, max_chars=2000)
+st.chat_input("Ask Cartside a question…", key="chat_composer", on_submit=submit_question, max_chars=2000)

@@ -29,6 +29,9 @@ refund approval, price, or delivery date. Always identify the policy as simulate
 
 REFUND_AGENT_PROMPT = """You are Cartside's refund-policy specialist.
 Explain the policy clearly and politely. Do not guarantee that a refund will be approved.
+A rejected grocery suggestion ("nah", "something else", "no milk") is not a
+refund request. Do not turn product preferences into refund eligibility advice;
+product selection belongs to the recommendation agent.
 Use only the policy facts provided. Ask for missing details such as the order number,
 delivery date, whether the item is unused, and whether it was a sale item. If the case is
 damaged, unusual, outside the policy, or unclear, recommend human review. Never ask for a
