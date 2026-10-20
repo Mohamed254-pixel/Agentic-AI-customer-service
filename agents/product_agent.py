@@ -116,10 +116,10 @@ def recommend_products(question: str, use_ai: bool = True) -> str:
         return fallback
     load_dotenv(ROOT / ".env")
     key = os.getenv("OPENAI_API_KEY")
-    if not key:
+    if not key or os.getenv("DEMO_MODE", "0") == "1":
         return fallback + "\n\n(AI explanation unavailable: set OPENAI_API_KEY in your .env file.)"
     try:
-        client = OpenAI(api_key=key)
+        client = OpenAI(api_key=key, timeout=20, max_retries=1)
         response = client.chat.completions.create(
             model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
             messages=[

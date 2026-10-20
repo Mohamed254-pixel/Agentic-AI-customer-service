@@ -6,7 +6,7 @@ A multi-agent AI customer service assistant that uses historical Instacart purch
 
 ## Project Overview
 
-This project combines data engineering with agentic AI. We use Python and DuckDB to process a large e-commerce dataset, then plan to integrate specialized AI agents using LangGraph and OpenAI.
+This project combines data engineering with agentic AI. We use Python and DuckDB to process a large e-commerce dataset, and integrates specialized agents using LangGraph and optional OpenAI calls.
 
 ### Dataset
 
@@ -25,13 +25,13 @@ The dataset contains anonymized historical transactions. It does not include liv
 
 ## AI Agent Architecture
 
-The planned system includes three specialized agents:
+The system includes three specialized agents:
 
 1. **Order History Agent** — Retrieves historical customer orders and purchased items.
 2. **Product Recommendation Agent** — Recommends grocery products using purchasing patterns.
 3. **Customer Support Agent** — Answers customer questions using a clearly identified simulated support policy.
 
-A LangGraph router will direct requests to the appropriate agent. MemorySaver will maintain conversation context across multiple turns.
+A LangGraph router directs requests to the appropriate agent. MemorySaver keeps in-process conversation state; new chats, customer changes, and server restarts start fresh conversations.
 
 ## Technology Stack
 
@@ -106,7 +106,7 @@ python scripts/data_quality.py
 
 ## Development Progress
 
-### Local frontend preview
+### Run Cartside locally
 
 With your virtual environment activated, run:
 
@@ -117,9 +117,9 @@ python -m streamlit run main.py
 ```
 
 Open the localhost URL printed in the terminal. The preview includes a demo
-customer selector, historical order summaries, and a wide chat placeholder
-with a bottom input bar. Order history is available in the sidebar.
-AI agents are not connected.
+customer selector, historical order summaries, and a wide chat connected to
+the order, recommendation, and simulated refund agents. Order history is
+available in the sidebar.
 
 Product photo assets are retained for future use but are not displayed in the
 chat layout. Photos are representative; the dataset does not verify historical
@@ -132,11 +132,12 @@ brands or package sizes. Sources are recorded in `assets/products/sources.json`.
 - [x] Validate order and product ID uniqueness
 - [x] Check initial missing values
 - [ ] Complete full data quality validation
-- [ ] Create persistent DuckDB database
-- [ ] Implement three AI agents
-- [ ] Connect agents using LangGraph
-- [ ] Implement MemorySaver
-- [ ] Test conversations and agent responses
+- [x] Create persistent DuckDB database
+- [x] Implement three agents
+- [x] Connect agents using LangGraph
+- [x] Implement MemorySaver
+- [x] Test offline conversations and agent responses
+- [ ] Verify live OpenAI responses with a valid API key
 - [ ] Complete project presentation
 
 ## Team Collaboration
@@ -147,4 +148,32 @@ Team members contribute through GitHub branches and pull requests.
 
 ## Project Status
 
-**In development:** Dataset preparation and initial validation completed. AI agent implementation is upcoming.
+**In development:** Integrated agents and frontend verified in offline demo mode. Live OpenAI validation and the final presentation remain to be completed.
+
+### OpenAI mode and testing
+
+Copy `.env.example` to `.env`. For offline mode, keep `DEMO_MODE=1`.
+For OpenAI mode, set `DEMO_MODE=0` and supply your own `OPENAI_API_KEY`.
+Restart Streamlit after changing settings. Never commit `.env` or an API key.
+The app labels offline replies and falls back to database/policy responses if
+OpenAI is unavailable. The OpenAI API is required for the assignment's live AI
+requirement; offline mode is for development and does not satisfy it by itself.
+
+The refund policy is simulated, not Instacart's policy. No refunds, live tracking,
+prices, payments, or order changes are available.
+
+```bash
+python -m pip install -r requirements-dev.txt
+python scripts/build_db.py --dataset sample
+DEMO_MODE=1 python -m pytest tests -q
+```
+
+Example three-turn order demo (customer `5117`):
+1. `What was in my latest order?`
+2. `Show that again`
+3. `What was in it?`
+
+Also try `Recommend bananas` and `What is the refund policy?`.
+Memory tests use both real local graph execution and a fake model that checks
+history delivery without making paid API calls. Arbitrary follow-up understanding
+is more limited in offline mode than OpenAI mode.

@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Annotated, Any, TypedDict
 
 import operator
+from functools import lru_cache
 from dotenv import load_dotenv
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
@@ -22,16 +23,20 @@ from langgraph.graph import END, StateGraph
 
 from agents.order_agent import handle_order_question
 from agents.product_agent import recommend_products
+from agents.refund_agent import handle_refund_question
 
 
 ROOT = Path(__file__).resolve().parents[1]
-POLICY_PATH = ROOT / "data" / "policies" / "refund_policy.txt"
 
 
 class RouterState(TypedDict, total=False):
     messages: Annotated[list[AnyMessage], operator.add]
     user_id: int
     route: str
+    order_id: int
+    product_question: str
+    effective_question: str
+    mode: str
 
 
 ROUTER_PROMPT = """You route requests for an Instacart customer-service demo.
@@ -116,13 +121,6 @@ def _keyword_route(question: str) -> str:
 
 
 
-def _load_policy() -> str:
-    try:
-        return POLICY_PATH.read_text(encoding="utf-8")
-    except FileNotFoundError:
-        return "The simulated refund policy is unavailable. Do not claim that a refund was processed."
-
-
 def build_router(model=None, debug: bool = False):
     """Build and compile the project's LangGraph router.
 
@@ -131,69 +129,63 @@ def build_router(model=None, debug: bool = False):
     """
 
     load_dotenv(ROOT / ".env")
-    if model is None and os.getenv("OPENAI_API_KEY"):
-        model = ChatOpenAI(model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"), temperature=0)
+    if model is None and os.getenv("OPENAI_API_KEY") and os.getenv("DEMO_MODE", "0") != "1":
+        model = ChatOpenAI(model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"), temperature=0, timeout=20, max_retries=1)
 
     def choose_route(state: RouterState):
         question = _last_user_message(state)
+        effective = question
+        previous_route = state.get("route")
+        if re.search(r"\b(that|those|them|it|else|again)\b", question.lower()):
+            if previous_route == "ORDER_HISTORY" and state.get("order_id") and not re.search(r"\border\s*#?\s*\d+", question.lower()):
+                effective += f" (order {state['order_id']})"
+            elif previous_route == "PRODUCT_RECOMMENDATION" and state.get("product_question"):
+                effective += " (previous product request: " + state["product_question"] + ")"
+        mode = "Local demo" if model is None else "OpenAI"
         if model is None:
-            route = _keyword_route(question)
+            route = _keyword_route(effective)
         else:
             try:
                 result = model.invoke([
                     SystemMessage(content=ROUTER_PROMPT),
-                    HumanMessage(content=question),
+                    *state.get("messages", []),
                 ])
                 route = _normalise_route(_message_text(result))
             except Exception:
+                mode = "Local fallback (OpenAI unavailable)"
                 # Network, rate-limit, or key problems: use the local rules.
-                route = _keyword_route(question)
+                route = _keyword_route(effective)
         if debug:
             print(f"Router selected: {route}")
-        return {"route": route}
+        return {"route": route, "effective_question": effective, "mode": mode}
 
     def order_node(state: RouterState):
-        question = _last_user_message(state)
+        question = state.get("effective_question", _last_user_message(state))
         user_id = state.get("user_id")
         if user_id is None:
             answer = "Please select a customer account before asking about order history."
         else:
-            answer = handle_order_question(user_id, question)["text"]
+            result = handle_order_question(user_id, question)
+            answer = result["text"]
+            if result.get("rows") and "product_name" in result["rows"][0]:
+                match = re.search(r"Order (\d+) contained", answer)
+                if match:
+                    return {"messages": [AIMessage(content=answer)], "order_id": int(match[1])}
         return {"messages": [AIMessage(content=answer)]}
 
     def product_node(state: RouterState):
         try:
-            answer = recommend_products(_last_user_message(state))
+            answer = recommend_products(state.get("effective_question", _last_user_message(state)), use_ai=model is not None)
         except FileNotFoundError as exc:
             # The product agent raises this when the DuckDB file isn't built yet.
             answer = str(exc)
         except Exception:
             answer = "I couldn't load product recommendations right now. Please try again later."
-        return {"messages": [AIMessage(content=answer)]}
+        return {"messages": [AIMessage(content=answer)], "product_question": state.get("effective_question", _last_user_message(state)), "mode": "Local fallback (OpenAI unavailable)" if "AI explanation unavailable" in answer else state.get("mode", "Local demo")}
 
     def support_node(state: RouterState):
-        question = _last_user_message(state)
-        policy = _load_policy()
-        no_model_answer = (
-            "I can explain the simulated customer-support policy, but I cannot "
-            "process a real refund.\n\n" + policy
-        )
-        if model is None:
-            answer = no_model_answer
-        else:
-            try:
-                result = model.invoke([
-                    SystemMessage(content=(
-                        "You are a simulated Instacart customer-support agent. "
-                        "Use only this policy. Never claim a refund or order change was completed.\n\n"
-                        + policy
-                    )),
-                    HumanMessage(content=question),
-                ])
-                answer = _message_text(result)
-            except Exception:
-                answer = no_model_answer
-        return {"messages": [AIMessage(content=answer)]}
+        answer = handle_refund_question(state.get("messages", []), model=model)
+        return {"messages": [AIMessage(content=answer)], "mode": "Local fallback (OpenAI unavailable)" if "OpenAI is unavailable" in answer else state.get("mode", "Local demo")}
 
     def smalltalk_node(state: RouterState):
         no_model_answer = "Hello! I can help with order history, grocery recommendations, and simulated customer support questions."
@@ -243,16 +235,18 @@ def build_router(model=None, debug: bool = False):
     return graph.compile(checkpointer=MemorySaver())
 
 
-router_graph = build_router()
+@lru_cache(maxsize=1)
+def get_router():
+    return build_router()
 
 
 def invoke_router(question: str, user_id: int, thread_id: str):
     """Convenience function for Streamlit or a future API endpoint."""
 
-    return router_graph.invoke(
+    return get_router().invoke(
         {
             "messages": [HumanMessage(content=question)],
             "user_id": user_id,
         },
-        config={"configurable": {"thread_id": thread_id}},
+        config={"configurable": {"thread_id": f"{user_id}:{thread_id}"}},
     )

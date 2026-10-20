@@ -16,3 +16,7 @@ data/processed/
 
 # macOS
 .DS_Store
+
+# Local workspace feedback and test caches
+.superset/
+.pytest_cache/

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from typing import Annotated, Literal, TypedDict
 
 from dotenv import load_dotenv
@@ -9,7 +10,7 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 
-load_dotenv()
+load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
 Intent = Literal["order_status", "refund_policy", "product_suggestion", "general"]
 
@@ -20,38 +21,48 @@ class AgentState(TypedDict, total=False):
     answer: str
 
 
-SYSTEM_PROMPT = """You are Nova, a friendly customer-service and sales assistant for BrightCart.
+SYSTEM_PROMPT = """You are Cartside, a friendly customer-service and sales assistant for Cartside.
 You must be concise, accurate, and helpful. Use only the store information supplied by the
 specialist agent. If information is missing, say what you need and never invent an order,
-refund approval, price, or delivery date. Keep the conversation context in mind."""
+refund approval, price, or delivery date. Always identify the policy as simulated; never claim a refund or order change was completed. Keep the conversation context in mind."""
 
-REFUND_AGENT_PROMPT = """You are BrightCart's refund-policy specialist.
+REFUND_AGENT_PROMPT = """You are Cartside's refund-policy specialist.
 Explain the policy clearly and politely. Do not guarantee that a refund will be approved.
 Use only the policy facts provided. Ask for missing details such as the order number,
 delivery date, whether the item is unused, and whether it was a sale item. If the case is
 damaged, unusual, outside the policy, or unclear, recommend human review. Never ask for a
 full credit-card number or other unnecessary sensitive information."""
 
-STORE_CONTEXT = {
-    "order_status": "Orders usually ship in 1-2 business days. Order BC-1042 shipped yesterday and is expected Friday. Other orders require an order number.",
-    "refund_policy": "BrightCart accepts unused items within 30 days of delivery. Sale items are exchange-only. Refunds go back to the original payment method in 5-7 business days after inspection.",
-    "product_suggestion": "The TrailPro Backpack is $79, water-resistant, and best for commuting. The CityLite Tote is $49, lighter, and best for short daily trips. The Weekender Duffel is $89 and best for overnight travel.",
-}
+POLICY_PATH = Path(__file__).resolve().parents[1] / "data/policies/refund_policy.txt"
+REFUND_POLICY = POLICY_PATH.read_text(encoding="utf-8").strip()
 
-REFUND_POLICY = """BrightCart accepts unused items within 30 days of delivery.
-Sale items are exchange-only. Refunds go back to the original payment method.
-Refunds are processed in 5–7 business days after inspection.
-"""
+
+def handle_refund_question(messages, model=None):
+    """Explain a clearly simulated policy using the saved conversation."""
+    fallback = "Simulated Cartside policy (class demo):\n\n" + REFUND_POLICY
+    if model is None:
+        return fallback
+    try:
+        result = model.invoke([
+            SystemMessage(content=SYSTEM_PROMPT),
+            SystemMessage(content=REFUND_AGENT_PROMPT + "\nSIMULATED POLICY:\n" + REFUND_POLICY),
+            *messages,
+        ])
+        return str(result.content)
+    except Exception:
+        return fallback + "\n\nOpenAI is unavailable; showing the policy directly."
 
 
 def route_intent(text: str) -> Intent:
     """Transparent router that selects one of three specialist agents."""
     t = text.lower()
+    if any(w in t for w in ["refund", "return", "money back", "exchange"]):
+        return "refund_policy"
     if any(w in t for w in ["order", "track", "tracking", "shipped", "delivery", "where is"]):
         return "order_status"
     if any(w in t for w in ["refund", "return", "money back", "exchange", "sale item", "used", "days ago"]):
         return "refund_policy"
-    if any(w in t for w in ["recommend", "suggest", "which", "best", "backpack", "tote", "duffel"]):
+    if any(w in t for w in ["recommend", "suggest", "which", "best", "grocery", "groceries", "product"]):
         return "product_suggestion"
     return "general"
 
@@ -68,24 +79,10 @@ def router_node(state: AgentState) -> AgentState:
 
 
 def mock_answer(intent: Intent, state: AgentState) -> str:
-    text = latest_user_text(state).lower()
-   
-    customer_text = " ".join(
-        str(m.content) for m in state.get("messages", []) if isinstance(m, HumanMessage)
-    ).lower()
-    if intent == "order_status":
-        if "bc-1042" in text or "bc-1042" in customer_text:
-            return "Your BrightCart order BC-1042 shipped yesterday and is expected Friday."
-        return "I can check that for you. Please send your BrightCart order number."
     if intent == "refund_policy":
-        if "sale" in text and "not on sale" not in text and "not a sale" not in text:
-            return "Sale items are exchange-only under BrightCart's policy, so they are not eligible for a standard refund. A human representative can review unusual circumstances."
-        if "45 days" in customer_text or "60 days" in customer_text or ("used" in text and "unused" not in text):
-            return "The standard policy requires the item to be unused and returned within 30 days of delivery. Because this situation may be outside the standard policy, a human representative should review it."
-        return "Unused items can be returned within 30 days of delivery. Sale items are exchange-only. After inspection, refunds return to the original payment method in 5–7 business days."
-    if intent == "product_suggestion":
-        return "For commuting, I recommend the $79 TrailPro Backpack because it is water-resistant. For a lighter short-trip option, the $49 CityLite Tote is a good choice."
-    return "I can help with order status, refunds and returns, or product recommendations. What would you like to know?"
+        return handle_refund_question(state.get("messages", []))
+    return "This module handles simulated refunds. Use the main Cartside router for order history and grocery recommendations."
+
 
 def make_specialist(intent: Intent):
     def specialist_node(state: AgentState) -> AgentState:
@@ -93,9 +90,9 @@ def make_specialist(intent: Intent):
             answer = mock_answer(intent, state)
         else:
             from langchain_openai import ChatOpenAI
-            llm = ChatOpenAI(model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"), temperature=0)
+            llm = ChatOpenAI(model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"), temperature=0, timeout=20, max_retries=1)
             specialist_prompt = REFUND_AGENT_PROMPT if intent == "refund_policy" else f"You are the {intent.replace('_', ' ')} specialist."
-            facts = REFUND_POLICY if intent == "refund_policy" else STORE_CONTEXT.get(intent, "")
+            facts = REFUND_POLICY if intent == "refund_policy" else "Use the main Cartside router for historical orders and grocery recommendations. No live tracking or prices are available."
             prompt = [
                 SystemMessage(content=SYSTEM_PROMPT),
                 SystemMessage(content=f"{specialist_prompt}\nStore facts:\n{facts}"),
@@ -133,12 +130,12 @@ def ask(graph, thread_id: str, text: str) -> str:
 def main():
     graph = build_graph()
     thread_id = "demo-customer-1"
-    print("Nova: Hi! I can help with orders, refunds, or product recommendations. Type 'quit' to exit.")
+    print("Cartside: Hi! I can help with orders, refunds, or product recommendations. Type 'quit' to exit.")
     while True:
         user = input("You: ").strip()
         if user.lower() in {"quit", "exit"}:
             break
-        print(f"Nova: {ask(graph, thread_id, user)}")
+        print(f"Cartside: {ask(graph, thread_id, user)}")
 
 
 if __name__ == "__main__":

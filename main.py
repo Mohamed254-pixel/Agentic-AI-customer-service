@@ -1,9 +1,13 @@
 """Run with: streamlit run main.py"""
 
+from uuid import uuid4
+
 import duckdb
 import streamlit as st
 
 from db.queries import DB, get_customer_orders, get_order_products
+from agents.router import build_router
+from langchain_core.messages import HumanMessage
 
 st.set_page_config(page_title="Cartside · Customer care", page_icon="🛒", layout="wide")
 st.markdown("""
@@ -51,18 +55,28 @@ with st.sidebar:
     st.divider()
     if st.button("＋ New chat", width="stretch"):
         st.session_state.messages = []
+        st.session_state.pop("chat_graph", None)
+        st.session_state.pop("submitted_question", None)
+        st.session_state.pop("reply_mode", None)
     st.caption("Instacart sample · Demo accounts")
 
 if st.session_state.get("active_customer") != user_id:
     st.session_state.active_customer = user_id
     st.session_state.messages = []
+    st.session_state.pop("chat_graph", None)
+    st.session_state.pop("submitted_question", None)
+    st.session_state.pop("reply_mode", None)
+
+if "chat_graph" not in st.session_state:
+    st.session_state.chat_graph = build_router()
+    st.session_state.thread_id = str(uuid4())
 
 title, badge = st.columns([4, 1])
 with title:
     st.markdown('<div class="hero">How can we help?</div>', unsafe_allow_html=True)
 with badge:
     st.markdown('<span class="badge">● Preview</span>', unsafe_allow_html=True)
-st.caption("Historical sample · AI not connected")
+st.caption("Historical sample · " + st.session_state.get("reply_mode", "Local demo / OpenAI when configured"))
 st.write("")
 
 orders = get_customer_orders(user_id)
@@ -86,11 +100,22 @@ if not st.session_state.messages:
 question = st.session_state.pop("submitted_question", None) or pending
 if question:
     st.session_state.messages.append({"role": "user", "text": question})
-    response = {"text": "AI replies will appear here once connected."}
+    try:
+        with st.spinner("Thinking…"):
+            result = st.session_state.chat_graph.invoke(
+                {"messages": [HumanMessage(content=question)], "user_id": user_id},
+                config={"configurable": {"thread_id": st.session_state.thread_id}},
+            )
+        response = {"text": str(result["messages"][-1].content), "mode": result.get("mode", "Local demo")}
+        st.session_state.reply_mode = result.get("mode", "Local demo")
+    except Exception:
+        response = {"text": "I couldn't complete that request. Please try again or start a new chat."}
     st.session_state.messages.append({"role": "assistant", **response})
 for message in st.session_state.messages:
     with st.chat_message(message["role"], avatar="🛒" if message["role"] == "assistant" else "👤"):
         st.write(message["text"])
+        if message.get("mode"):
+            st.caption(message["mode"])
         if message.get("rows"):
             st.dataframe(message["rows"], hide_index=True, width="stretch")
 

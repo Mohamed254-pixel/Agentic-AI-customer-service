@@ -89,7 +89,7 @@ def _answer_for_specific_order(orders, requested_order_id):
 
     if not products:
         return {
-            "text": f"Order {requested_order_id} exists, but it has no product records.",
+            "text": f"Order {requested_order_id} exists, but its product details are unavailable in this dataset.",
             "rows": [],
         }
 

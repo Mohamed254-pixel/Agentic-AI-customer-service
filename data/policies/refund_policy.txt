@@ -1,0 +1,4 @@
+SIMULATED POLICY — Cartside class project, not Instacart's actual policy.
+Unused items may be considered for return within 30 days of delivery. Sale items are exchange-only. Damaged, spoiled, missing, or unusual grocery-item cases require human review; do not promise approval. Following approval and inspection, simulated refunds return to the original payment method in 5–7 business days.
+The historical dataset has no delivery dates, payment information, or refund records. Do not determine actual eligibility or claim to process a refund, cancellation, payment, or order change. Ask for an order ID and a brief description for a hypothetical review; never request payment-card details.
+Live delivery tracking, prices, and actual order changes are unavailable in this demo.
