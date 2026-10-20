@@ -1,5 +1,6 @@
 """Multi-turn regressions for routing, exclusions, provenance and isolation."""
 import json
+import re
 from pathlib import Path
 
 import duckdb
@@ -161,7 +162,7 @@ def test_unverified_model_output_never_reaches_recommendations(tiny_catalog, inv
     assert result['ai_fallback']
     assert result['recommendations']
     assert all(p['product_id'] not in {2, 3, 6} for p in result['recommendations'])
-    assert 'Martian' not in result['text'] and '$1' not in result['text']
+    assert 'Martian' not in result['text'] and not re.search(r'\$1(?:\.00)?(?=\s|$)', result['text'])
 
 
 def test_even_valid_model_ids_cannot_inject_extra_products(tiny_catalog):
@@ -173,7 +174,7 @@ def test_even_valid_model_ids_cannot_inject_extra_products(tiny_catalog):
     result = product_turn('Recommend groceries', model=ExtraProse())
     assert not result['ai_fallback']
     assert len(result['recommendations']) == 1
-    assert 'invented' not in result['text'] and '$10' not in result['text']
+    assert 'invented' not in result['text'] and not re.search(r'\$10(?:\.00)?(?=\s|$)', result['text'])
 
 
 def test_exact_product_name_has_priority_over_plural_alias():

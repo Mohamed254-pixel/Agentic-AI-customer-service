@@ -24,3 +24,9 @@ the intended class audience before sharing the link.
 Official instructions:
 - https://docs.streamlit.io/deploy/streamlit-community-cloud/deploy-your-app/deploy
 - https://docs.streamlit.io/deploy/streamlit-community-cloud/deploy-your-app/secrets-management
+
+Simulated pricing is initialized offline into a separate ignored DuckDB file
+beside the sample database. It uses existing DuckDB dependencies and requires no
+additional API keys, CSVs, downloads, or committed databases. On ephemeral Cloud
+storage, deterministic product-ID pricing regenerates the same USD values.
+These prices must stay labeled simulated; they are not historical order totals.

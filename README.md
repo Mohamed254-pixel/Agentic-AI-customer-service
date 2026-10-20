@@ -161,7 +161,7 @@ OpenAI is unavailable. The OpenAI API is required for the assignment's live AI
 requirement; offline mode is for development and does not satisfy it by itself.
 
 The refund policy is simulated, not Instacart's policy. No refunds, live tracking,
-prices, payments, or order changes are available.
+live prices, payments, or order changes are available.
 
 ```bash
 python -m pip install -r requirements-dev.txt
@@ -191,3 +191,24 @@ not a complete factual verifier; final team testing is still required.
 See [DEPLOYMENT.md](DEPLOYMENT.md) for Streamlit Community Cloud setup.
 Use `.streamlit/secrets.toml.example` as the format for Cloud Secrets; never
 commit a real secrets file.
+
+### Simulated pricing
+
+`db/pricing.py` maintains a separate generated DuckDB file,
+`data/processed/instacart_sample_pricing.duckdb`. The original CSVs and sample
+product/order tables stay unchanged. Prices are deterministic SHA-256 values
+keyed by product ID (USD $0.99–$19.99 per catalog item); they are illustrative,
+not market estimates or historical purchase prices. Existing stored prices
+are preserved when the catalog gains products.
+
+Recommendations and shopping lists label prices as simulated. Shopping totals
+use stored integer cents, one unit per selected product, including checked items;
+tax and delivery are excluded. Checking an item marks progress, not payment.
+The shopping list is session-only. A pricing lookup does not consume the next
+set of recommendations. Stock and live price information remain unavailable.
+
+The app creates this pricing database offline on startup, including on Streamlit
+Community Cloud. Generated databases remain ignored by Git. Cloud storage is
+replaceable: restarts can regenerate the same prices without network downloads
+or new secrets. `get_prices` / `quote_products` provide the boundary for a future
+real pricing provider; that integration has not been implemented.

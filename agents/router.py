@@ -113,6 +113,9 @@ def _explicit_route(question: str):
         r"|\bmy\b.{1,60}\b(missing|never arrived)\b", text,
     ):
         return "CUSTOMER_SUPPORT"
+    if (re.search(r"\b(prices?|costs?|cheapest|cheaper|expensive)\b|\bhow much\b", text)
+            and is_product_reference(question)):
+        return "PRODUCT_RECOMMENDATION"
     if re.search(r"\b(recommend(?:ation|ations|s)?|suggest(?:ion|ions|s)?|similar|grocery|groceries|products?)\b"
                  r"|\bwhat should i (buy|get)\b", text):
         return "PRODUCT_RECOMMENDATION"

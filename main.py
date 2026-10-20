@@ -1,6 +1,7 @@
 """Cartside web app. Run with: streamlit run main.py."""
 
 import os
+from html import escape
 from pathlib import Path
 from uuid import uuid4
 
@@ -10,11 +11,12 @@ from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage
 
 from agents.router import build_router
+from db.pricing import ensure_pricing_database, quote_products, money, LABEL
 from db.bootstrap import ensure_sample_database
-from db.queries import DB, get_customer_orders
+from db.queries import DB, get_customer_orders, get_order_products
 
 ROOT = Path(__file__).resolve().parent
-st.set_page_config(page_title="Cartside · Your grocery assistant", page_icon="✳", layout="wide")
+st.set_page_config(page_title="Cartside · Your grocery assistant", page_icon=":material/shopping_bag:", layout="wide")
 load_dotenv(ROOT / ".env")
 # Hosted root-level secrets are loaded into the server environment, never the page.
 try:
@@ -29,6 +31,7 @@ st.markdown(f'<style>{(ROOT / "ui/styles.css").read_text()}</style>', unsafe_all
 
 try:
     ensure_sample_database()
+    ensure_pricing_database()
 except (OSError, duckdb.Error):
     st.error("The sample data couldn't be loaded. Please restart the app or contact the project team.")
     st.stop()
@@ -49,7 +52,8 @@ def reset_chat():
 with st.sidebar:
     st.markdown('<div class="brand"><span class="brand-icon">c</span>Cartside</div>', unsafe_allow_html=True)
     st.button("New chat", icon=":material/add:", width="stretch", on_click=reset_chat)
-    st.markdown('<div class="sidebar-label">WORKSPACE</div>', unsafe_allow_html=True)
+    page = st.radio("Workspace", ["Chat", "Orders", "Shopping list"], label_visibility="collapsed")
+    st.markdown('<div class="sidebar-label">CUSTOMER</div>', unsafe_allow_html=True)
     user_id = st.selectbox("Demo customer", customer_ids,
         index=customer_ids.index(5117) if 5117 in customer_ids else 0,
         format_func=lambda value: f"Customer #{value}")
@@ -64,19 +68,63 @@ if "chat_graph" not in st.session_state:
 orders = get_customer_orders(user_id)
 with st.sidebar:
     st.markdown(f'<div class="sidebar-stat"><span>Historical orders</span><strong>{len(orders)}</strong></div>', unsafe_allow_html=True)
-    with st.expander("Order history", icon=":material/history:"):
-        st.dataframe([{"Order": o["order_id"], "Sequence": o["order_number"]} for o in orders], hide_index=True, width="stretch")
-    st.markdown('<div class="sidebar-note">Instacart sample data<br>Refund policies are simulated.</div>', unsafe_allow_html=True)
+    st.markdown('<div class="sidebar-note">Sample workspace<br>Historical data · Simulated refunds</div>', unsafe_allow_html=True)
+
 
 has_ai = bool(os.getenv("OPENAI_API_KEY")) and os.getenv("DEMO_MODE", "0") != "1"
 mode = st.session_state.get("reply_mode", "OpenAI" if has_ai else "Local demo")
 # Render only known status strings; never expose exception text or credentials.
 status = "Local fallback" if "fallback" in mode else "AI enabled" if mode == "OpenAI" else "Demo mode"
-st.markdown(f'<div class="topline"><span class="topline-title">Your grocery assistant</span><span class="status"><span class="status-dot"></span>{status}</span></div>', unsafe_allow_html=True)
+st.markdown(f'<div class="topline"><span class="topline-title">{escape(page)}</span><span class="status"><span class="status-dot"></span>{status}</span></div>', unsafe_allow_html=True)
+
+if page == "Orders":
+    st.markdown('<div class="page-heading"><span class="eyebrow">YOUR WORKSPACE</span><h1>Order history</h1><p>A closer look at your past grocery orders.</p></div>', unsafe_allow_html=True)
+    st.caption(f"{len(orders)} historical orders · Customer #{user_id}")
+    for order in orders:
+        with st.expander(f"Order #{order['order_id']} · Purchase {order['order_number']}"):
+            products = get_order_products(order["order_id"])
+            if products:
+                for product in products:
+                    st.markdown(f'<div class="order-item"><span>{escape(product["product_name"])}</span><span class="item-meta">{product["add_to_cart_order"]:02d}</span></div>', unsafe_allow_html=True)
+                st.caption(f"{len(products)} products recorded")
+            else:
+                st.caption("Item details aren't included for this order in the sample data.")
+    st.stop()
+
+if page == "Shopping list":
+    st.markdown('<div class="page-heading"><span class="eyebrow">PLAN YOUR NEXT SHOP</span><h1>Shopping list</h1><p>Keep the essentials in one place.</p></div>', unsafe_allow_html=True)
+    # This view is session-only; catalog, agents, and order records stay unchanged.
+    with duckdb.connect(str(DB), read_only=True) as con:
+        catalog = dict(con.execute("SELECT product_id, product_name FROM products ORDER BY product_name").fetchall())
+    lists = st.session_state.setdefault("shopping_lists", {})
+    shopping = lists.setdefault(user_id, {"products": [], "checked": {}})
+    def save_products():
+        shopping["products"] = st.session_state[f"shopping_products_{user_id}"]
+    def save_checked(product_id):
+        shopping["checked"][product_id] = st.session_state[f"shopping_done_{user_id}_{product_id}"]
+    st.session_state[f"shopping_products_{user_id}"] = shopping["products"]
+    selected = st.multiselect("Add products", list(catalog), format_func=catalog.get,
+                              key=f"shopping_products_{user_id}", on_change=save_products,
+                              placeholder="Search the product catalog…")
+    quote = quote_products(selected)
+    st.caption(LABEL)
+    if not selected:
+        st.markdown('<div class="list-empty"><h3>Room for your essentials.</h3><p>Search above to add your first product.</p></div>', unsafe_allow_html=True)
+    else:
+        checked = 0
+        with st.container(key="shopping_items"):
+            for product_id in selected:
+                st.session_state[f"shopping_done_{user_id}_{product_id}"] = shopping["checked"].get(product_id, False)
+                checked += st.checkbox(f"{catalog[product_id]} — {money(quote['prices'][product_id])}", key=f"shopping_done_{user_id}_{product_id}",
+                                       on_change=save_checked, args=(product_id,))
+        st.markdown(f'<div class="list-total"><span>Simulated total · {len(selected)} items</span><strong>{money(quote["total_cents"])}</strong></div>', unsafe_allow_html=True)
+        st.caption(f"{checked} of {len(selected)} checked · Remove products using the search field above")
+    st.caption("Saved for this browser session. This list doesn't place an order.")
+    st.stop()
 
 pending = None
 if not st.session_state.messages:
-    st.markdown('<div class="welcome"><div class="welcome-mark">✳</div><h1>A little help with<br>your everyday groceries.</h1><p>Groceries, orders, or something else. Just ask.</p></div>', unsafe_allow_html=True)
+    st.markdown('<div class="welcome"><span class="eyebrow">CARTSIDE ASSISTANT</span><h1>How can I help?</h1><p>Groceries, orders, and everyday questions.</p></div>', unsafe_allow_html=True)
     with st.container(key="starters"):
         columns = st.columns(3)
         prompts = [
@@ -89,7 +137,7 @@ if not st.session_state.messages:
                 pending = question
     # One short welcome preserves the same accessible chat structure as replies.
     with st.chat_message("assistant", avatar=":material/eco:"):
-        st.write("What can I help you with?")
+        st.write("Here whenever you need a hand.")
 
 question = st.session_state.pop("submitted_question", None) or pending
 if question:
@@ -121,4 +169,4 @@ def submit_question():
     st.session_state.submitted_question = st.session_state.chat_composer
 
 
-st.chat_input("Ask Cartside a question…", key="chat_composer", on_submit=submit_question, max_chars=2000)
+st.chat_input("Message Cartside…", key="chat_composer", on_submit=submit_question, max_chars=2000)

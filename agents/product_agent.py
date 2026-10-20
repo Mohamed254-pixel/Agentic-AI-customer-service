@@ -12,6 +12,7 @@ from dotenv import load_dotenv
 from openai import OpenAI
 
 from agents.voice import CHAT_STYLE
+from db.pricing import recommendation_lines
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DB = ROOT / 'data/processed/instacart_sample.duckdb'
@@ -26,7 +27,7 @@ For requests for more/other options, choose from the fresh candidates. For
 constraint-only requests, choose from the filtered popular items. The candidate
 list is nonempty, so do not return an empty list. Do not generate recommendation
 prose; the application will render the verified names and evidence."""
-STOP_WORDS = set("i a an am are is be it this that those them the and or of with for to in on my me you your can could would do does please give get want need some something else other another different more new options option recommend recommendations recommendation suggest suggestions suggestion similar grocery groceries product products buy try find show about how what which any like also have don't dont no not nah nope instead without avoid exclude skip thanks thank yeah yes okay ok based last order sum much anything stuff one ones wrong ain aint t pls plz yo fam bro man food foods".split())
+STOP_WORDS = set("i a an am are is be it this that those them the and or of with for to in on my me you your can could would do does please give get want need some something else other another different more new options option recommend recommendations recommendation suggest suggestions suggestion similar grocery groceries product products buy try find show about how what which any like also have don't dont no not nah nope instead without avoid exclude skip thanks thank yeah yes okay ok based last order sum much anything stuff one ones wrong ain aint t pls plz yo fam bro man food foods price prices cost costs cheapest cheaper expensive stock available availability much".split())
 
 
 def normalize_request(text: str) -> str:
@@ -270,15 +271,27 @@ def product_turn(question: str, context=None, *, messages=None, model=None, use_
                        if method == 'frequently_bought_together' else "These share a grocery aisle with the item you asked about."
                        if method == 'same_aisle' else "These are popular in the sample order history.")
         if 'which one' in normalized:
-            explanation += " I don't have enough price or ingredient details to say which is best for you."
-        text = explanation + '\n\n' + '\n'.join('- ' + p['product_name'] for p in selected)
+            explanation += " These prices are simulated, and I don't have verified ingredient details to say which is best for you."
+        text = explanation + '\n\n' + recommendation_lines(selected, _database_path())
         return {'text': text, 'excluded_products': excluded, 'suggested_product_ids': seen,
                 'last_suggested_product_ids': previous_ids, 'seed_product_id': context.get('seed_product_id'),
                 'product_question': question, 'recommendations': selected, 'ai_fallback': False}
-    # Price/stock questions are product follow-ups, but this data cannot answer
-    # them. Don't silently consume the next set of suggestions for these turns.
+    # Stored demo prices can answer pricing questions; stock is still unavailable.
+    # Pricing lookups never consume fresh recommendations.
     if re.search(r"\b(price|prices|cost|costs|cheapest|cheaper|expensive|stock|available|availability)\b|\bhow much\b", normalized):
-        return {'text': "I don't have live prices or stock information. I can help you find other products, though.",
+        detail = "I don't have live prices or stock information."
+        if not re.search(r"\b(stock|available|availability)\b", normalized):
+            with duckdb.connect(str(_database_path()), read_only=True) as con:
+                names = dict(con.execute('SELECT product_id, product_name FROM products').fetchall())
+                requested = _find_product(con, question)
+            price_ids = [requested['product_id']] if requested else previous_ids
+            priced = [{'product_id': pid, 'product_name': names[pid]} for pid in price_ids
+                      if pid in names and not _is_excluded(names[pid], excluded)]
+            if priced:
+                detail += " Here are the simulated prices:\n\n" + recommendation_lines(priced, _database_path())
+            else:
+                detail += " Which grocery product would you like a simulated price for?"
+        return {'text': detail,
                 'excluded_products': excluded, 'suggested_product_ids': seen,
                 'last_suggested_product_ids': context.get('last_suggested_product_ids', []),
                 'seed_product_id': context.get('seed_product_id'), 'product_question': question,
@@ -305,7 +318,7 @@ def product_turn(question: str, context=None, *, messages=None, model=None, use_
     }[result['method']]
     if added_exclusions:
         opening = "Got it — I'll leave those out. Here are some alternatives:"
-    text = opening + '\n\n' + '\n'.join('- ' + p['product_name'] for p in selected) + '\n\n' + evidence
+    text = opening + '\n\n' + recommendation_lines(selected, _database_path()) + '\n\n' + evidence
     return {**updates, 'text': text, 'recommendations': selected,
             'suggested_product_ids': list(dict.fromkeys([*seen, *(p['product_id'] for p in selected)])),
             'last_suggested_product_ids': [p['product_id'] for p in selected],

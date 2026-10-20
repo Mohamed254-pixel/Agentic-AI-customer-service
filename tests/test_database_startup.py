@@ -70,6 +70,12 @@ assert not DB.exists()
 app = AppTest.from_file(Path.cwd() / 'main.py').run(timeout=30)
 assert not app.exception, app.exception
 assert DB.is_file()
+from db.pricing import get_prices
+pricing_db = DB.with_name(DB.stem + '_pricing.duckdb')
+assert pricing_db.is_file()
+with __import__('duckdb').connect(str(DB), read_only=True) as con:
+    pid = con.execute('SELECT product_id FROM products LIMIT 1').fetchone()[0]
+assert get_prices([pid])[pid] > 0
 app.chat_input[0].set_value('What was in my latest order?').run(timeout=30)
 assert not app.exception
 assert '1405149' in app.chat_message[-1].markdown[0].value
