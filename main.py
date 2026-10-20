@@ -49,10 +49,23 @@ def reset_chat():
         st.session_state.pop(key, None)
 
 
+def start_new_chat():
+    reset_chat()
+    st.session_state.workspace_page = "Chat"
+
+
+def submit_question():
+    st.session_state.submitted_question = st.session_state.chat_composer
+
+
+def render_composer():
+    st.chat_input("Message Cartside…", key="chat_composer", on_submit=submit_question, max_chars=2000)
+
+
 with st.sidebar:
     st.markdown('<div class="brand"><span class="brand-icon">c</span>Cartside</div>', unsafe_allow_html=True)
-    st.button("New chat", icon=":material/add:", width="stretch", on_click=reset_chat)
-    page = st.radio("Workspace", ["Chat", "Orders", "Shopping list"], label_visibility="collapsed")
+    st.button("New chat", icon=":material/add:", width="stretch", on_click=start_new_chat)
+    page = st.radio("Workspace", ["Chat", "Orders", "Shopping list"], label_visibility="collapsed", key="workspace_page")
     st.markdown('<div class="sidebar-label">CUSTOMER</div>', unsafe_allow_html=True)
     user_id = st.selectbox("Demo customer", customer_ids,
         index=customer_ids.index(5117) if 5117 in customer_ids else 0,
@@ -124,20 +137,21 @@ if page == "Shopping list":
 
 pending = None
 if not st.session_state.messages:
-    st.markdown('<div class="welcome"><span class="eyebrow">CARTSIDE ASSISTANT</span><h1>How can I help?</h1><p>Groceries, orders, and everyday questions.</p></div>', unsafe_allow_html=True)
-    with st.container(key="starters"):
-        columns = st.columns(3)
-        prompts = [
-            ("My latest order", ":material/receipt_long:", "What was in my latest order?"),
-            ("Find something new", ":material/eco:", "Recommend bananas"),
-            ("Returns & refunds", ":material/undo:", "What is your refund policy?"),
-        ]
-        for column, (label, icon, question) in zip(columns, prompts):
-            if column.button(label, icon=icon, width="stretch"):
-                pending = question
-    # One short welcome preserves the same accessible chat structure as replies.
-    with st.chat_message("assistant", avatar=":material/eco:"):
-        st.write("Here whenever you need a hand.")
+    # Keep the first question beside its context; active chats use the native
+    # bottom-pinned Streamlit composer below instead. Never render both.
+    with st.container(key="welcome_panel"):
+        st.markdown('<div class="welcome"><h1>How can I help?</h1><p>Groceries, orders, and everyday questions.</p></div>', unsafe_allow_html=True)
+        render_composer()
+        with st.container(key="starters"):
+            columns = st.columns(3, gap="small")
+            prompts = [
+                ("My latest order", ":material/receipt_long:", "What was in my latest order?"),
+                ("Find something new", ":material/eco:", "Recommend bananas"),
+                ("Returns & refunds", ":material/undo:", "What is your refund policy?"),
+            ]
+            for column, (label, icon, question) in zip(columns, prompts):
+                if column.button(label, icon=icon, width="stretch"):
+                    pending = question
 
 question = st.session_state.pop("submitted_question", None) or pending
 if question:
@@ -165,8 +179,5 @@ for message in st.session_state.messages:
             st.dataframe(message["rows"], hide_index=True, width="stretch")
 
 
-def submit_question():
-    st.session_state.submitted_question = st.session_state.chat_composer
-
-
-st.chat_input("Message Cartside…", key="chat_composer", on_submit=submit_question, max_chars=2000)
+if st.session_state.messages:
+    render_composer()

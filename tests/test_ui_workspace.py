@@ -37,3 +37,32 @@ def test_order_navigation_and_customer_shopping_lists(monkeypatch):
     app.multiselect[0].set_value(ids[1:]).run(timeout=30)
     assert len(app.checkbox) == 1
     assert not app.exception
+
+
+def test_welcome_composer_transition_and_prompt(monkeypatch):
+    monkeypatch.setenv('DEMO_MODE', '1')
+    app = AppTest.from_file(Path(__file__).resolve().parents[1] / 'main.py').run(timeout=30)
+    assert not app.exception
+    assert len(app.chat_input) == 1
+    assert len(app.chat_message) == 0  # No duplicate assistant greeting.
+    assert app.session_state['messages'] == []
+    next(b for b in app.button if b.label == 'My latest order').click().run(timeout=30)
+    assert not app.exception
+    assert len(app.chat_input) == 1
+    assert len(app.chat_message) == 2
+    assert '1405149' in app.chat_message[-1].markdown[0].value
+    assert not any('How can I help?' in item.value for item in app.markdown)
+    app.chat_input[0].set_value('Show that again').run(timeout=30)
+    assert not app.exception
+    assert len(app.chat_message) == 4
+    assert '1405149' in app.chat_message[-1].markdown[0].value
+    app.radio[0].set_value('Orders').run(timeout=30)
+    next(b for b in app.button if 'New chat' in b.label).click().run(timeout=30)
+    assert not app.exception
+    assert app.radio[0].value == 'Chat'
+    assert len(app.chat_message) == 0
+    assert len(app.chat_input) == 1
+    app.chat_input[0].set_value('Recommend bananas').run(timeout=30)
+    assert not app.exception
+    assert len(app.chat_message) == 2
+    assert 'Simulated prices' in app.chat_message[-1].markdown[0].value

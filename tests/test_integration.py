@@ -102,11 +102,11 @@ def test_streamlit_chat_and_customer_reset():
     old_thread = app.session_state['thread_id']
     next(b for b in app.button if 'New chat' in b.label).click().run(timeout=30)
     assert app.session_state['thread_id'] != old_thread
-    assert len(app.chat_message) == 1
+    assert len(app.chat_message) == 0
     app.chat_input[0].set_value('Show order 1662937').run(timeout=30)
     app.selectbox[0].set_value(89).run(timeout=30)
     assert not app.exception
-    assert len(app.chat_message) == 1
+    assert len(app.chat_message) == 0
     app.chat_input[0].set_value('What was in it?').run(timeout=30)
     assert '1662937' not in app.chat_message[-1].markdown[0].value
 
