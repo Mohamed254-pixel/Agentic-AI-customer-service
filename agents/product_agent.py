@@ -13,6 +13,7 @@ from typing import Any
 import duckdb
 from dotenv import load_dotenv
 from openai import OpenAI
+from agents.voice import CHAT_STYLE
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DB = ROOT / "data" / "processed" / "instacart_sample.duckdb"
@@ -123,11 +124,13 @@ def recommend_products(question: str, use_ai: bool = True) -> str:
         response = client.chat.completions.create(
             model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
             messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "system", "content": CHAT_STYLE + "\n" + SYSTEM_PROMPT},
                 {"role": "user", "content": (
                     f"Customer question: {question}\nMatched product: {result['matched_product']}\n"
                     f"Evidence type: {evidence}\nAllowed suggestions:\n" + "\n".join(lines)
-                    + "\nExplain the suggestions in 2-5 short sentences."
+                    + "\nGive a short natural introduction and a compact list. Explain that the evidence "
+                    "is the exact evidence type supplied (co-purchases OR shared aisle); never claim both. Don't invent pairings, "
+                    "taste descriptions, nutrition, or reasons unsupported by this evidence."
                 )},
             ],
             temperature=0.3,

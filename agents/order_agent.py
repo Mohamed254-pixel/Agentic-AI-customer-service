@@ -123,6 +123,10 @@ def handle_order_question(user_id, question):
             normalized_question,
         )
     )
+    asks_for_first = bool(re.search(
+        r"\b(first|earliest|oldest|initial)(?:[ -]+ever)?(?:\s+(?:order|purchase|one))?\b",
+        normalized_question,
+    ))
     asks_for_history = bool(
         re.search(
             r"\b(order history|previous orders|past orders|how many orders|all orders)\b",
@@ -134,6 +138,7 @@ def handle_order_question(user_id, question):
         requested_order_id
         or asks_for_unavailable_data
         or asks_for_latest
+        or asks_for_first
         or asks_for_history
     ):
         return {"text": HELP_TEXT, "rows": []}
@@ -162,6 +167,14 @@ def handle_order_question(user_id, question):
                 }
             return {"text": UNAVAILABLE_DATA_TEXT, "rows": []}
         return _answer_for_specific_order(orders, requested_order_id)
+
+    if asks_for_first:
+        # Order IDs are identifiers, not chronological sequence numbers.
+        first_order = min(orders, key=lambda order: order["order_number"])
+        result = _answer_for_specific_order(orders, int(first_order["order_id"]))
+        if first_order["order_number"] != 1:
+            result["text"] = "This is the earliest order available in the sample, not necessarily your first-ever order.\n\n" + result["text"]
+        return result
 
     if asks_for_latest:
         # order_number records the sequence of a customer's orders. It is more

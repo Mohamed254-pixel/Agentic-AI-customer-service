@@ -137,7 +137,7 @@ brands or package sizes. Sources are recorded in `assets/products/sources.json`.
 - [x] Connect agents using LangGraph
 - [x] Implement MemorySaver
 - [x] Test offline conversations and agent responses
-- [ ] Verify live OpenAI responses with a valid API key
+- [x] Verify live OpenAI responses with a valid API key
 - [ ] Complete project presentation
 
 ## Team Collaboration
@@ -148,7 +148,7 @@ Team members contribute through GitHub branches and pull requests.
 
 ## Project Status
 
-**In development:** Integrated agents and frontend verified in offline demo mode. Live OpenAI validation and the final presentation remain to be completed.
+**In development:** Integrated agents verified in offline tests and a live OpenAI smoke test. Final team acceptance testing, submission evidence, and the presentation remain.
 
 ### OpenAI mode and testing
 
@@ -177,3 +177,10 @@ Also try `Recommend bananas` and `What is the refund policy?`.
 Memory tests use both real local graph execution and a fake model that checks
 history delivery without making paid API calls. Arbitrary follow-up understanding
 is more limited in offline mode than OpenAI mode.
+
+First-order follow-up example (customer `5117`): ask `What was in my latest
+order?`, then `How bout my first order?`. The latest order is `1405149`; the
+first is `1662937`. Chronology uses `order_number`, not the numerical order ID.
+OpenAI rewrites successful order lookups conversationally while preserving
+product names and rejecting newly introduced numeric details. This guard is
+not a complete factual verifier; final team testing is still required.

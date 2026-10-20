@@ -9,6 +9,7 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, System
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
+from agents.voice import CHAT_STYLE
 
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
@@ -44,11 +45,14 @@ def handle_refund_question(messages, model=None):
         return fallback
     try:
         result = model.invoke([
-            SystemMessage(content=SYSTEM_PROMPT),
+            SystemMessage(content=CHAT_STYLE + "\n" + SYSTEM_PROMPT),
             SystemMessage(content=REFUND_AGENT_PROMPT + "\nSIMULATED POLICY:\n" + REFUND_POLICY),
             *messages,
         ])
-        return str(result.content)
+        answer = str(result.content)
+        if "simulated" not in answer.lower() and "demo" not in answer.lower():
+            answer = "For this demo's simulated policy: " + answer
+        return answer
     except Exception:
         return fallback + "\n\nOpenAI is unavailable; showing the policy directly."
 

@@ -109,3 +109,56 @@ def test_streamlit_chat_and_customer_reset():
     assert len(app.chat_message) == 1
     app.chat_input[0].set_value('What was in it?').run(timeout=30)
     assert '1662937' not in app.chat_message[-1].markdown[0].value
+
+
+@pytest.mark.parametrize('invent_number', [False, True])
+def test_order_voice_uses_history_and_rejects_invented_details(invent_number):
+    class OrderVoice:
+        def __init__(self):
+            self.calls = []
+
+        def invoke(self, messages):
+            self.calls.append(messages)
+            if messages[0].content.startswith('You route'):
+                return AIMessage(content='ORDER_HISTORY')
+            text = "Sure — order 1405149 had Lemon Yogurt, Blueberry Yoghurt, and Original No Pulp 100% Florida Orange Juice."
+            return AIMessage(content=text + (' It arrives in 999 days.' if invent_number else ''))
+
+    model = OrderVoice()
+    graph = build_router(model=model)
+    ask(graph, 'What was in my latest order?')
+    result = ask(graph, 'Show that again')
+    text = result['messages'][-1].content
+    assert '999' not in text
+    assert 'Lemon Yogurt' in text
+    assert any(isinstance(m, HumanMessage) and m.content == 'What was in my latest order?' for m in model.calls[-1])
+    if not invent_number:
+        assert text.startswith('Sure')
+
+
+def test_explicit_recommendation_overrides_wrong_model_route(monkeypatch):
+    from agents import router
+    monkeypatch.setattr(router, 'recommend_products', lambda *args, **kwargs: 'Database suggestions for bananas')
+    result = ask(build_router(model=FakeModel()), 'Recommend bananas')
+    assert result['route'] == 'PRODUCT_RECOMMENDATION'
+    assert result['messages'][-1].content == 'Database suggestions for bananas'
+
+
+@pytest.mark.parametrize('question', ['how bout my first order', 'my earliest order', 'the oldest one', 'first-ever order'])
+def test_first_order_uses_chronological_sequence(question):
+    from db.queries import get_customer_orders, get_order_products
+    first = min(get_customer_orders(5117), key=lambda row: row['order_number'])
+    result = handle_order_question(5117, question)
+    assert str(first['order_id']) in result['text']
+    assert result['rows'] == get_order_products(first['order_id'])
+
+
+def test_switch_latest_to_first_then_follow_up():
+    from db.queries import get_customer_orders
+    first = min(get_customer_orders(5117), key=lambda row: row['order_number'])['order_id']
+    graph = build_router()
+    ask(graph, 'What was in my latest order?')
+    for question in ['How bout my first order?', 'What was in that first one?', 'Show that again']:
+        result = ask(graph, question)
+        assert str(first) in result['messages'][-1].content
+        assert '1405149' not in result['messages'][-1].content

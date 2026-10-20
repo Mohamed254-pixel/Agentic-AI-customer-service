@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import re
+import json
 from pathlib import Path
 from typing import Annotated, Any, TypedDict
 
@@ -24,6 +25,7 @@ from langgraph.graph import END, StateGraph
 from agents.order_agent import handle_order_question
 from agents.product_agent import recommend_products
 from agents.refund_agent import handle_refund_question
+from agents.voice import CHAT_STYLE
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -45,7 +47,7 @@ Return exactly one label:
 - ORDER_HISTORY: questions about past orders or items in an order
 - PRODUCT_RECOMMENDATION: grocery product suggestions or products bought together
 - CUSTOMER_SUPPORT: refunds, policies, complaints, or general support questions
-- SMALLTALK: greetings, thanks, or goodbyes
+- SMALLTALK: greetings, thanks, goodbyes, introductory questions, or ordinary conversation
 
 The dataset does not contain live delivery tracking, prices, payment data,
 quantities, customer addresses, or actual refund processing. Use CUSTOMER_SUPPORT
@@ -106,7 +108,7 @@ def _keyword_route(question: str) -> str:
         return "PRODUCT_RECOMMENDATION"
     # Past-purchase wording ("what did I buy last time?") is order history.
     if re.search(
-        r"\b(order|orders|purchased|bought|history|latest|last time)\b"
+        r"\b(order|orders|purchased|bought|history|latest|last time|first|earliest|oldest|initial)\b"
         r"|\bdid i (buy|order|purchase)\b",
         text,
     ):
@@ -136,7 +138,8 @@ def build_router(model=None, debug: bool = False):
         question = _last_user_message(state)
         effective = question
         previous_route = state.get("route")
-        if re.search(r"\b(that|those|them|it|else|again)\b", question.lower()):
+        changes_order = re.search(r"\b(first|earliest|oldest|initial|latest|last|recent)\b", question.lower())
+        if not changes_order and re.search(r"\b(that|those|them|it|else|again)\b", question.lower()):
             if previous_route == "ORDER_HISTORY" and state.get("order_id") and not re.search(r"\border\s*#?\s*\d+", question.lower()):
                 effective += f" (order {state['order_id']})"
             elif previous_route == "PRODUCT_RECOMMENDATION" and state.get("product_question"):
@@ -151,6 +154,13 @@ def build_router(model=None, debug: bool = False):
                     *state.get("messages", []),
                 ])
                 route = _normalise_route(_message_text(result))
+                # Explicit requests win over a model distracted by earlier turns.
+                if re.search(
+                    r"\b(refund|return|damaged|missing|wrong|cancel|policy|charged|"
+                    r"recommend|suggest|similar|order|orders|purchased|bought|history|first|earliest|oldest|initial)\b",
+                    question.lower(),
+                ):
+                    route = _keyword_route(question)
             except Exception:
                 mode = "Local fallback (OpenAI unavailable)"
                 # Network, rate-limit, or key problems: use the local rules.
@@ -159,6 +169,32 @@ def build_router(model=None, debug: bool = False):
             print(f"Router selected: {route}")
         return {"route": route, "effective_question": effective, "mode": mode}
 
+    def conversational_order(state, result):
+        """Let the model explain retrieved facts, with a safe database fallback."""
+        fallback = result["text"]
+        if model is None or not result.get("rows"):
+            return fallback
+        facts = json.dumps(result, default=str)
+        try:
+            response = model.invoke([
+                SystemMessage(content=CHAT_STYLE + "\nAnswer using only the verified order facts below. "
+                    "Keep every product name and relevant order ID exactly as supplied. "
+                    "Do not infer quantities, order dates, tracking, prices, or refunds. "
+                    "For a repeated question, briefly acknowledge it and show the details again.\n"
+                    + facts),
+                *state.get("messages", []),
+            ])
+            answer = _message_text(response).strip()
+            # Preserve the factual list and reject newly invented numeric details.
+            names = [row["product_name"] for row in result["rows"] if "product_name" in row]
+            allowed_numbers = set(re.findall(r"\d+", facts)) | {str(len(result["rows"]))}
+            if (not answer or any(name not in answer for name in names)
+                    or not set(re.findall(r"\d+", answer)).issubset(allowed_numbers)):
+                return fallback
+            return answer
+        except Exception:
+            return fallback
+
     def order_node(state: RouterState):
         question = state.get("effective_question", _last_user_message(state))
         user_id = state.get("user_id")
@@ -166,9 +202,9 @@ def build_router(model=None, debug: bool = False):
             answer = "Please select a customer account before asking about order history."
         else:
             result = handle_order_question(user_id, question)
-            answer = result["text"]
+            answer = conversational_order(state, result)
             if result.get("rows") and "product_name" in result["rows"][0]:
-                match = re.search(r"Order (\d+) contained", answer)
+                match = re.search(r"Order (\d+) contained", result["text"])
                 if match:
                     return {"messages": [AIMessage(content=answer)], "order_id": int(match[1])}
         return {"messages": [AIMessage(content=answer)]}
@@ -188,18 +224,15 @@ def build_router(model=None, debug: bool = False):
         return {"messages": [AIMessage(content=answer)], "mode": "Local fallback (OpenAI unavailable)" if "OpenAI is unavailable" in answer else state.get("mode", "Local demo")}
 
     def smalltalk_node(state: RouterState):
-        no_model_answer = "Hello! I can help with order history, grocery recommendations, and simulated customer support questions."
+        no_model_answer = "Hey! What can I help you with?"
         if model is None:
             answer = no_model_answer
         else:
             try:
                 result = model.invoke([
-                    SystemMessage(content=(
-                        "Respond briefly and professionally to the user's small talk. "
-                        "Mention that you can help with order history, grocery recommendations, "
-                        "and simulated customer support questions."
-                    )),
-                    HumanMessage(content=_last_user_message(state)),
+                    SystemMessage(content=CHAT_STYLE + "\nYou can help with historical grocery orders, "
+                        "product suggestions, and simulated refund questions. Mention these only when asked."),
+                    *state.get("messages", []),
                 ])
                 answer = _message_text(result)
             except Exception:
