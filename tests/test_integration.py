@@ -162,3 +162,25 @@ def test_switch_latest_to_first_then_follow_up():
         result = ask(graph, question)
         assert str(first) in result['messages'][-1].content
         assert '1405149' not in result['messages'][-1].content
+
+
+def test_hosted_first_launch_builds_database_atomically(tmp_path):
+    import duckdb
+    from db.bootstrap import ensure_sample_database
+    database = tmp_path / 'processed/sample.duckdb'
+    sample = Path(__file__).resolve().parents[1] / 'data/sample'
+    ensure_sample_database(database, sample)
+    with duckdb.connect(str(database), read_only=True) as con:
+        assert con.execute('SELECT COUNT(*) FROM orders').fetchone()[0] == 10000
+        assert con.execute('SELECT COUNT(*) FROM products').fetchone()[0] == 12207
+    modified = database.stat().st_mtime_ns
+    ensure_sample_database(database, sample)
+    assert database.stat().st_mtime_ns == modified
+
+
+def test_missing_source_leaves_no_partial_database(tmp_path):
+    from db.bootstrap import ensure_sample_database
+    database = tmp_path / 'processed/sample.duckdb'
+    with pytest.raises(FileNotFoundError):
+        ensure_sample_database(database, tmp_path / 'missing')
+    assert not database.exists()

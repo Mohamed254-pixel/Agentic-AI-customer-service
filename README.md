@@ -117,9 +117,10 @@ python -m streamlit run main.py
 ```
 
 Open the localhost URL printed in the terminal. The preview includes a demo
-customer selector, historical order summaries, and a wide chat connected to
-the order, recommendation, and simulated refund agents. Order history is
-available in the sidebar.
+customer selector, a focused chat interface, and starter prompts for orders,
+recommendations, and simulated refunds. Order history is available in the sidebar.
+The sample database is built automatically on first launch; the explicit build
+command above is optional.
 
 Product photo assets are retained for future use but are not displayed in the
 chat layout. Photos are representative; the dataset does not verify historical
@@ -184,3 +185,9 @@ first is `1662937`. Chronology uses `order_number`, not the numerical order ID.
 OpenAI rewrites successful order lookups conversationally while preserving
 product names and rejecting newly introduced numeric details. This guard is
 not a complete factual verifier; final team testing is still required.
+
+### Hosting
+
+See [DEPLOYMENT.md](DEPLOYMENT.md) for Streamlit Community Cloud setup.
+Use `.streamlit/secrets.toml.example` as the format for Cloud Secrets; never
+commit a real secrets file.

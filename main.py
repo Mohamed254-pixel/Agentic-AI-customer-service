@@ -1,102 +1,96 @@
-"""Run with: streamlit run main.py"""
+"""Cartside web app. Run with: streamlit run main.py."""
 
+import os
+from pathlib import Path
 from uuid import uuid4
 
 import duckdb
 import streamlit as st
-
-from db.queries import DB, get_customer_orders, get_order_products
-from agents.router import build_router
+from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage
 
-st.set_page_config(page_title="Cartside · Customer care", page_icon="🛒", layout="wide")
-st.markdown("""
-<style>
-@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&display=swap');
-html, body, .stApp, [data-testid="stMarkdownContainer"] {font-family:'DM Sans',sans-serif;}
-.stApp {background:radial-gradient(ellipse at 75% 0%,#292929 0%,#141414 52%);color:#f1f1ef;}
-[data-testid="stHeader"] {background:transparent;}
-[data-testid="stSidebar"] {background:#191919;border-right:1px solid #303030;}
-.block-container {max-width:1040px;padding-top:3.8rem;padding-bottom:3rem;}
-h1,h2,h3,h4 {color:#f1f1ef;letter-spacing:-.035em;}
-.hero {font-size:clamp(30px,4vw,46px);font-weight:600;line-height:1.2;letter-spacing:-1.8px;margin:0 0 12px;}
-.badge {display:inline-block;border:1px solid #465448;background:#252e27;border-radius:30px;padding:6px 13px;font-size:12px;color:#b8cfae;}
-[data-testid="stCaptionContainer"], [data-testid="stCaptionContainer"] p {color:#aaaaaa;}
-[data-testid="stSidebar"] p, [data-testid="stSidebar"] label {color:#dededb;}
-[data-testid="stChatMessage"] {background:#222222;border:1px solid #393939;border-radius:16px;padding:20px;margin-top:12px;}
-.stButton>button {border-radius:12px;border:1px solid #414141;background:#252525;color:#e0e0dd;min-height:44px;transition:background .15s,border-color .15s;}
-.stButton>button:hover {border-color:#9eb695;background:#293029;color:#e3eddf;}
-.stButton>button:focus:not(:active) {border-color:#9eb695;color:#d7e5d1;}
-[data-testid="stMetric"] {background:linear-gradient(135deg,#2b2b2b,#212121);border:1px solid #3b3b3b;border-radius:16px;padding:20px 22px;}
-[data-testid="stMetricLabel"] {color:#b0b0ad;font-size:13px;}
-[data-testid="stMetricValue"] {color:#f1f1ed;font-size:30px;font-weight:500;}
-[data-testid="stVerticalBlockBorderWrapper"]>div {border-color:#393939!important;border-radius:16px!important;}
-[data-testid="stChatInput"] {border:1px solid #494949;border-radius:14px;background:#272727;}
-[data-testid="stChatInput"]:focus-within {border-color:#9eb695;}
-[data-testid="stChatMessageAvatarAssistant"] {background:#344036;color:#c2d7b8;}
-[data-testid="stChatMessageAvatarUser"] {background:#383838;}
-@media(max-width:640px) {.block-container {padding-top:2rem;} [data-testid="stMetric"] {padding:12px;} [data-testid="stMetricValue"] {font-size:24px;}}
-</style>
-""", unsafe_allow_html=True)
+from agents.router import build_router
+from db.bootstrap import ensure_sample_database
+from db.queries import DB, get_customer_orders
 
-if not DB.exists():
-    st.title("Let's get your demo ready")
-    st.info("Build the sample database once, then reload this page.")
-    st.code("python scripts/build_db.py --dataset sample", language="bash")
+ROOT = Path(__file__).resolve().parent
+st.set_page_config(page_title="Cartside · Your grocery assistant", page_icon="✳", layout="wide")
+load_dotenv(ROOT / ".env")
+# Hosted root-level secrets are loaded into the server environment, never the page.
+try:
+    for name in ("OPENAI_API_KEY", "OPENAI_MODEL", "DEMO_MODE"):
+        value = st.secrets.get(name)
+        if value is not None:
+            os.environ[name] = str(value)
+except FileNotFoundError:
+    pass
+
+st.markdown(f'<style>{(ROOT / "ui/styles.css").read_text()}</style>', unsafe_allow_html=True)
+
+try:
+    ensure_sample_database()
+except (OSError, duckdb.Error):
+    st.error("The sample data couldn't be loaded. Please restart the app or contact the project team.")
     st.stop()
 
 with duckdb.connect(str(DB), read_only=True) as con:
     customer_ids = [row[0] for row in con.execute("SELECT DISTINCT user_id FROM orders ORDER BY user_id").fetchall()]
+if not customer_ids:
+    st.info("No demo customers are available yet.")
+    st.stop()
+
+
+def reset_chat():
+    st.session_state.messages = []
+    for key in ("chat_graph", "submitted_question", "reply_mode", "thread_id"):
+        st.session_state.pop(key, None)
+
 
 with st.sidebar:
-    st.markdown("## 🛒 Cartside")
-    st.divider()
-    user_id = st.selectbox("Customer", customer_ids, index=customer_ids.index(5117) if 5117 in customer_ids else 0, format_func=lambda value: f"Customer #{value}")
-    st.divider()
-    if st.button("＋ New chat", width="stretch"):
-        st.session_state.messages = []
-        st.session_state.pop("chat_graph", None)
-        st.session_state.pop("submitted_question", None)
-        st.session_state.pop("reply_mode", None)
-    st.caption("Instacart sample · Demo accounts")
+    st.markdown('<div class="brand"><span class="brand-icon">c</span>Cartside</div>', unsafe_allow_html=True)
+    st.button("New chat", icon=":material/add:", width="stretch", on_click=reset_chat)
+    st.markdown('<div class="sidebar-label">WORKSPACE</div>', unsafe_allow_html=True)
+    user_id = st.selectbox("Demo customer", customer_ids,
+        index=customer_ids.index(5117) if 5117 in customer_ids else 0,
+        format_func=lambda value: f"Customer #{value}")
 
 if st.session_state.get("active_customer") != user_id:
+    reset_chat()
     st.session_state.active_customer = user_id
-    st.session_state.messages = []
-    st.session_state.pop("chat_graph", None)
-    st.session_state.pop("submitted_question", None)
-    st.session_state.pop("reply_mode", None)
-
 if "chat_graph" not in st.session_state:
     st.session_state.chat_graph = build_router()
     st.session_state.thread_id = str(uuid4())
 
-title, badge = st.columns([4, 1])
-with title:
-    st.markdown('<div class="hero">How can we help?</div>', unsafe_allow_html=True)
-with badge:
-    st.markdown('<span class="badge">● Preview</span>', unsafe_allow_html=True)
-st.caption("Historical sample · " + st.session_state.get("reply_mode", "Local demo / OpenAI when configured"))
-st.write("")
-
 orders = get_customer_orders(user_id)
-latest_items = get_order_products(orders[0]["order_id"]) if orders else []
-left, middle, right = st.columns(3)
-left.metric("Sample orders", len(orders))
-middle.metric("Latest order", str(orders[0]["order_id"]) if orders else "—")
-right.metric("Products", len(latest_items))
-st.write("")
+with st.sidebar:
+    st.markdown(f'<div class="sidebar-stat"><span>Historical orders</span><strong>{len(orders)}</strong></div>', unsafe_allow_html=True)
+    with st.expander("Order history", icon=":material/history:"):
+        st.dataframe([{"Order": o["order_id"], "Sequence": o["order_number"]} for o in orders], hide_index=True, width="stretch")
+    st.markdown('<div class="sidebar-note">Instacart sample data<br>Refund policies are simulated.</div>', unsafe_allow_html=True)
 
-st.subheader("Chat")
-suggestions = ["Show my order history", "What was in my latest order?"]
+has_ai = bool(os.getenv("OPENAI_API_KEY")) and os.getenv("DEMO_MODE", "0") != "1"
+mode = st.session_state.get("reply_mode", "OpenAI" if has_ai else "Local demo")
+# Render only known status strings; never expose exception text or credentials.
+status = "Local fallback" if "fallback" in mode else "AI enabled" if mode == "OpenAI" else "Demo mode"
+st.markdown(f'<div class="topline"><span class="topline-title">Your grocery assistant</span><span class="status"><span class="status-dot"></span>{status}</span></div>', unsafe_allow_html=True)
+
 pending = None
-buttons = st.columns(2)
-for column, suggestion in zip(buttons, suggestions):
-    if column.button(suggestion, width="stretch"):
-        pending = suggestion
 if not st.session_state.messages:
-    with st.chat_message("assistant", avatar="🛒"):
-        st.write("Ask about your orders.")
+    st.markdown('<div class="welcome"><div class="welcome-mark">✳</div><h1>A little help with<br>your everyday groceries.</h1><p>Explore your orders. Find your next favorite.</p></div>', unsafe_allow_html=True)
+    with st.container(key="starters"):
+        columns = st.columns(3)
+        prompts = [
+            ("My latest order", ":material/receipt_long:", "What was in my latest order?"),
+            ("Find something new", ":material/eco:", "Recommend bananas"),
+            ("Returns & refunds", ":material/undo:", "What is your refund policy?"),
+        ]
+        for column, (label, icon, question) in zip(columns, prompts):
+            if column.button(label, icon=icon, width="stretch"):
+                pending = question
+    # One short welcome preserves the same accessible chat structure as replies.
+    with st.chat_message("assistant", avatar=":material/eco:"):
+        st.write("What can I help you with?")
+
 question = st.session_state.pop("submitted_question", None) or pending
 if question:
     st.session_state.messages.append({"role": "user", "text": question})
@@ -107,15 +101,18 @@ if question:
                 config={"configurable": {"thread_id": st.session_state.thread_id}},
             )
         response = {"text": str(result["messages"][-1].content), "mode": result.get("mode", "Local demo")}
-        st.session_state.reply_mode = result.get("mode", "Local demo")
+        st.session_state.reply_mode = response["mode"]
     except Exception:
-        response = {"text": "I couldn't complete that request. Please try again or start a new chat."}
+        response = {"text": "I couldn't complete that request. Try again, or start a new chat."}
     st.session_state.messages.append({"role": "assistant", **response})
+    # Redraw from state so the empty-state heading disappears immediately.
+    st.rerun()
+
 for message in st.session_state.messages:
-    with st.chat_message(message["role"], avatar="🛒" if message["role"] == "assistant" else "👤"):
+    with st.chat_message(message["role"], avatar=":material/eco:" if message["role"] == "assistant" else ":material/person:"):
         st.write(message["text"])
-        if message.get("mode"):
-            st.caption(message["mode"])
+        if "fallback" in message.get("mode", "").lower():
+            st.caption("AI unavailable · using local data")
         if message.get("rows"):
             st.dataframe(message["rows"], hide_index=True, width="stretch")
 
@@ -124,12 +121,4 @@ def submit_question():
     st.session_state.submitted_question = st.session_state.chat_composer
 
 
-st.chat_input("Ask about your orders…", key="chat_composer", on_submit=submit_question)
-
-with st.sidebar:
-    with st.expander("Order history"):
-        st.dataframe(
-            [{"Order": o["order_id"], "Sequence": o["order_number"]} for o in orders],
-            hide_index=True,
-            width="stretch",
-        )
+st.chat_input("Ask Cartside anything about your groceries…", key="chat_composer", on_submit=submit_question, max_chars=2000)
