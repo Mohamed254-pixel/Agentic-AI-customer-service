@@ -1,14 +1,22 @@
 # Cartside — Agentic AI Customer Service
 
+[![Cartside CI on main](https://github.com/Mohamed254-pixel/Agentic-AI-customer-service/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Mohamed254-pixel/Agentic-AI-customer-service/actions/workflows/ci.yml)
+
 ## Project Overview
 
-Cartside is a grocery customer-service prototype that routes chat requests to three LangGraph specialists. It looks up historical orders, recommends products from purchase data, and explains simulated support policies. The Streamlit workspace runs without an API key using an anonymized Instacart sample stored in DuckDB. The project began as a four-person team project for BUS4 118S at San José State University.
+Cartside is a grocery customer-service prototype that turns historical Instacart basket data into a Streamlit workspace. LangGraph routes conversations to three specialists. DuckDB supplies the order records and ranks product recommendations, while the support agent uses a checked-in simulated policy.
+
+The project began as a four-person team project for BUS4 118S at San José State University.
 
 ## Live Demo
 
-Public deployment is pending verification. [Deployment and release smoke test](DEPLOYMENT.md)
+**[Live Demo: https://cartside-ai.streamlit.app](https://cartside-ai.streamlit.app)**
 
-## Workspace preview
+The public Streamlit endpoint responded successfully. The hosted interactive smoke test remains unverified.
+
+The public demo mode runs offline with bundled data and makes no paid OpenAI API requests. Select customer **5117** to try an order lookup, personalized recommendations, or simulated order support.
+
+## Screenshots
 
 Screenshots from the local Streamlit preview using the bundled sample data.
 
@@ -41,7 +49,7 @@ Python 3.13 · Streamlit · DuckDB · LangGraph and MemorySaver · pytest and Ru
 
 ## Dataset and Data Engineering
 
-The source is the [Instacart Market Basket Analysis dataset](https://www.kaggle.com/datasets/psparks/instacart-market-basket-analysis). It includes roughly 3.4 million order records and 32.4 million prior basket rows, plus a separate training basket file. The checked-in sample contains 10,000 orders, 93,803 prior basket rows, 4,052 training basket rows and 12,207 products.
+The Instacart Market Basket Analysis dataset includes roughly 3.4 million order records and 32.4 million prior basket rows, plus a separate training basket file. The [bundled sample](data/sample/) contains 10,000 orders, 93,803 prior basket rows, 4,052 training basket rows and 12,207 products.
 
 ```mermaid
 flowchart LR
@@ -53,7 +61,7 @@ flowchart LR
     DB --> Pricing[(Separate simulated pricing DuckDB)]
 ```
 
-The builder checks headers, explicit column types, required values, unique keys, foreign-key relationships, basket positions and split membership. The first purchase can have a missing days-since-prior value. DuckDB executes joins, filters and aggregates in SQL. The Streamlit launch reads the bundled sample, and query results contain the selected customer's orders or catalog-level evidence.
+The ingestion pipeline loads six CSVs into typed DuckDB tables, validates headers and required fields, and checks key uniqueness, foreign-key relationships, basket positions, and prior/train split membership before publishing the database atomically. DuckDB performs joins, filters, and aggregations in SQL. The app reads the sample through parameterized queries.
 
 The sample generator selects prior and training orders by hashed customer ID, then order sequence. The 10,000-order cutoff can truncate a customer's history. Building from the checked-in CSVs reproduces the demo without downloading raw data. The separate `--dataset full` command is for offline analysis.
 
@@ -67,14 +75,15 @@ The sample generator selects prior and training orders by hashed customer ID, th
 
 ## Key Features
 
-- Clickable starters for the latest order, personalized products, and order help.
-- Follow-up turns remember the referenced order and earlier suggestions. **New chat** and customer changes reset the conversation.
-- An **Orders** view shows historical baskets. The **Shopping list** stores selections in the browser session and totals simulated prices in integer cents.
-- A public configuration that makes zero paid API calls. Private OpenAI use is opt-in and loopback-only.
+- **Customer workspace.** The redesigned overview shows the selected sample customer, historical order count, and latest recorded order. Desktop panels stack on smaller screens.
+- **Order history.** Expand a basket to see product names. Order IDs, purchase sequence, and item counts come from DuckDB.
+- **Recommendations.** Browse personalized repeat purchases, co-purchases, or sample-wide popular items. Results show catalog departments when available and explain the ranking source.
+- **Shopping list.** Add, remove, or check off catalog items. Selections stay in the session, and simulated totals use integer cents.
+- **Conversation.** Replies recognize casual greetings, typos, and thanks in offline mode. Small talk preserves the active specialist for follow-ups. Changing customers or selecting **New chat** clears the conversation.
 
 ## Testing and Reliability
 
-Local verification with Python 3.13 and Streamlit 1.67 passed **95 offline tests**. The suite covers SQL accuracy, startup from clean sample data, routing, multi-turn conversation, customer isolation, invalid inputs, recovery, and the three Streamlit views. Live OpenAI is outside the offline test run. GitHub Actions installs the runtime, builds the sample, runs Ruff and runs pytest.
+The full offline suite passed **106 tests** locally. It covers ingestion and SQL accuracy, routing, casual conversation, multi-turn memory, customer isolation, error recovery, and the Streamlit views. GitHub Actions runs the sample build, dependency checks, Ruff, and pytest on Python 3.13. [Verified CI run on main](https://github.com/Mohamed254-pixel/Agentic-AI-customer-service/actions/runs/44468443969)
 
 For customer **5117**, the latest available order is **1405149** and contains Lemon Yogurt, Blueberry Yoghurt and Original No Pulp 100% Florida Orange Juice. The first order is **1662937** and contains four products. The lookup uses `order_number` for chronology.
 
@@ -98,7 +107,7 @@ python -m ruff check --select E9,F63,F7,F82 .
 DEMO_MODE=1 OPENAI_API_KEY= python -m pytest -q
 ```
 
-For full historical analysis, place the six raw CSVs in `data/raw/instacart/` and run `python scripts/build_db.py --dataset full`. To download via the existing helper, install `kagglehub` and run `python scripts/download_data.py`. The full-data build is independent of the demo.
+For full historical analysis, place the six raw CSVs in `data/raw/instacart/` and run `python scripts/build_db.py --dataset full`. The optional `scripts/download_data.py` helper depends on an external Kaggle mirror. The full-data build is independent of the demo.
 
 ## Deployment
 
