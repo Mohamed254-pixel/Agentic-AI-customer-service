@@ -10,17 +10,16 @@ from __future__ import annotations
 
 import os
 import re
-import json
 from pathlib import Path
 from typing import Annotated, Any, TypedDict
 
-import operator
 from functools import lru_cache
 from dotenv import load_dotenv
-from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, RemoveMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, StateGraph
+from langgraph.graph.message import REMOVE_ALL_MESSAGES, add_messages
 
 from agents.order_agent import handle_order_question
 from agents.product_agent import is_product_reference, normalize_request, parse_exclusions, product_turn
@@ -32,20 +31,21 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class RouterState(TypedDict, total=False):
-    messages: Annotated[list[AnyMessage], operator.add]
+    messages: Annotated[list[AnyMessage], add_messages]
     user_id: int
-    route: str
-    order_id: int
+    context_customer: int | None
+    route: str | None
+    order_id: int | None
     product_question: str
     effective_question: str
     mode: str
-    active_route: str
+    active_route: str | None
     excluded_products: list[str]
     suggested_product_ids: list[int]
     last_suggested_product_ids: list[int]
     seed_product_id: int | None
     recommendations: list[dict[str, Any]]
-    recommendation_method: str
+    recommendation_method: str | None
     matched_product: str | None
 
 
@@ -110,18 +110,22 @@ def _explicit_route(question: str):
         r"complaint|policy|charged|billing|tracking|track|delivery|shipped|payment)\b"
         r"|\bmoney back\b|\b(wrong|missing)\s+(order|item|items|delivery|product)\b"
         r"|\b(order|item|delivery)\b.*\b(wrong|missing)\b"
-        r"|\bmy\b.{1,60}\b(missing|never arrived)\b", text,
+        r"|\bmy\b.{1,60}\b(missing|never arrived)\b"
+        r"|\b(help|support|contact)\b.*\b(orders?|customer service)\b"
+        r"|\b(change|modify|edit|update|place)\b.*\b(my|an|the|a)\s+order\b", text,
     ):
         return "CUSTOMER_SUPPORT"
     if (re.search(r"\b(prices?|costs?|cheapest|cheaper|expensive)\b|\bhow much\b", text)
             and is_product_reference(question)):
         return "PRODUCT_RECOMMENDATION"
-    if re.search(r"\b(recommend(?:ation|ations|s)?|suggest(?:ion|ions|s)?|similar|grocery|groceries|products?)\b"
+    if re.search(r"\b(recommend(?:ation|ations|s)?|suggest(?:ion|ions|s)?|similar)\b"
                  r"|\bwhat should i (buy|get)\b", text):
         return "PRODUCT_RECOMMENDATION"
     if re.search(r"\b(order|orders|purchased|bought)\b"
                  r"|\bdid i (buy|order|purchase)\b|\b(first|initial) (order|purchase)\b", text):
         return "ORDER_HISTORY"
+    if re.search(r"\b(grocery|groceries|products?)\b", text):
+        return "PRODUCT_RECOMMENDATION"
     return None
 
 
@@ -192,7 +196,7 @@ def _keyword_route(question: str) -> str:
 
 
 
-def build_router(model=None, debug: bool = False):
+def build_router(model=None, debug: bool = False, *, allow_openai: bool = True):
     """Build and compile the project's LangGraph router.
 
     A model can be injected for tests. If omitted, ChatOpenAI uses the
@@ -200,8 +204,25 @@ def build_router(model=None, debug: bool = False):
     """
 
     load_dotenv(ROOT / ".env")
-    if model is None and os.getenv("OPENAI_API_KEY") and os.getenv("DEMO_MODE", "0") != "1":
-        model = ChatOpenAI(model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"), temperature=0, timeout=20, max_retries=1)
+    if allow_openai and model is None and os.getenv("OPENAI_API_KEY") and os.getenv("DEMO_MODE") == "0":
+        model = ChatOpenAI(model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"), temperature=0, timeout=15, max_retries=0, max_tokens=400)
+
+    def isolate_customer(state: RouterState):
+        user_id = state.get("user_id")
+        previous_customer = state.get("context_customer")
+        if type(previous_customer) is type(user_id) and previous_customer == user_id:
+            return {}
+        latest = next((m for m in reversed(state.get("messages", []))
+                       if isinstance(m, HumanMessage)), None)
+        return {
+            "context_customer": user_id,
+            "messages": [RemoveMessage(id=REMOVE_ALL_MESSAGES), *([latest] if latest else [])],
+            "active_route": None, "route": None, "order_id": None,
+            "excluded_products": [], "suggested_product_ids": [],
+            "last_suggested_product_ids": [], "seed_product_id": None,
+            "recommendations": [], "recommendation_method": None,
+            "matched_product": None, "product_question": "",
+        }
 
     def choose_route(state: RouterState):
         question = _last_user_message(state)
@@ -220,7 +241,7 @@ def build_router(model=None, debug: bool = False):
             try:
                 result = model.invoke([
                     SystemMessage(content=ROUTER_PROMPT + f"\nActive topic: {topic or 'none'}"),
-                    *state.get("messages", []),
+                    *state.get("messages", [])[-12:],
                 ])
                 route = forced or _normalise_route(_message_text(result))
             except Exception:
@@ -232,28 +253,19 @@ def build_router(model=None, debug: bool = False):
                 "active_route": topic if route == "SMALLTALK" and _smalltalk(question) else route}
 
     def conversational_order(state, result):
-        """Let the model explain retrieved facts, with a safe database fallback."""
+        """Optionally add a fixed acknowledgment to the rendered database facts."""
         fallback = result["text"]
         if model is None or not result.get("rows"):
             return fallback
-        facts = json.dumps(result, default=str)
         try:
             response = model.invoke([
-                SystemMessage(content=CHAT_STYLE + "\nAnswer using only the verified order facts below. "
-                    "Keep every product name and relevant order ID exactly as supplied. "
-                    "Do not infer quantities, order dates, tracking, prices, or refunds. "
-                    "For a repeated question, briefly acknowledge it and show the details again.\n"
-                    + facts),
-                *state.get("messages", []),
+                SystemMessage(content=CHAT_STYLE + "\nReply with Sure if a short acknowledgment fits. "
+                              "Cartside will display the order records directly."),
+                *state.get("messages", [])[-12:],
             ])
-            answer = _message_text(response).strip()
-            # Preserve the factual list and reject newly invented numeric details.
-            names = [row["product_name"] for row in result["rows"] if "product_name" in row]
-            allowed_numbers = set(re.findall(r"\d+", facts)) | {str(len(result["rows"]))}
-            if (not answer or any(name not in answer for name in names)
-                    or not set(re.findall(r"\d+", answer)).issubset(allowed_numbers)):
-                return fallback
-            return answer
+            if re.match(r"^sure\b", _message_text(response).strip(), re.I):
+                return "Sure. " + fallback
+            return fallback
         except Exception:
             return fallback
 
@@ -265,16 +277,13 @@ def build_router(model=None, debug: bool = False):
         else:
             result = handle_order_question(user_id, question)
             answer = conversational_order(state, result)
-            if result.get("rows") and "product_name" in result["rows"][0]:
-                match = re.search(r"Order (\d+) contained", result["text"])
-                if match:
-                    return {"messages": [AIMessage(content=answer)], "order_id": int(match[1])}
+            return {"messages": [AIMessage(content=answer)], "order_id": result.get("order_id")}
         return {"messages": [AIMessage(content=answer)]}
 
     def product_node(state: RouterState):
         try:
             result = product_turn(_last_user_message(state), state,
-                                  messages=state.get("messages", []), model=model,
+                                  messages=state.get("messages", [])[-12:], model=model,
                                   use_ai=model is not None)
         except Exception:
             return {"messages": [AIMessage(content="I couldn't load grocery suggestions right now. Please try again.")]}
@@ -293,7 +302,7 @@ def build_router(model=None, debug: bool = False):
         elif _smalltalk(text):
             no_model_answer = "Hey! What can I help you with?"
         else:
-            no_model_answer = "I'm in demo mode, so I can look up groceries and orders but can't answer general questions yet."
+            no_model_answer = "I'm in demo mode. Try asking about your latest order, grocery recommendations, or simulated support policies."
         response_mode = state.get("mode", "Local demo")
         if model is None:
             answer = no_model_answer
@@ -307,7 +316,7 @@ def build_router(model=None, debug: bool = False):
                         "You have no live web search: say when you cannot verify current information. "
                         "Do not invent Cartside products, customer records, prices, or actions. "
                         "If a question needs a product lookup, ask which grocery item rather than inventing a store recommendation."),
-                    *state.get("messages", []),
+                    *state.get("messages", [])[-12:],
                 ])
                 answer = _message_text(result)
                 response_mode = "OpenAI"
@@ -317,12 +326,14 @@ def build_router(model=None, debug: bool = False):
         return {"messages": [AIMessage(content=answer)], "mode": response_mode}
 
     graph = StateGraph(RouterState)
+    graph.add_node("Customer_Context", isolate_customer)
     graph.add_node("Router", choose_route)
     graph.add_node("Order_History_Agent", order_node)
     graph.add_node("Product_Recommendation_Agent", product_node)
     graph.add_node("Customer_Support_Agent", support_node)
     graph.add_node("Small_Talk", smalltalk_node)
-    graph.set_entry_point("Router")
+    graph.set_entry_point("Customer_Context")
+    graph.add_edge("Customer_Context", "Router")
     graph.add_conditional_edges(
         "Router",
         lambda state: state["route"],

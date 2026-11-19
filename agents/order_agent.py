@@ -96,6 +96,7 @@ def _answer_for_specific_order(orders, requested_order_id):
     return {
         "text": _format_product_text(requested_order_id, products),
         "rows": products,
+        "order_id": requested_order_id,
     }
 
 
@@ -112,6 +113,9 @@ def handle_order_question(user_id, question):
 
     if not isinstance(question, str) or not question.strip():
         return {"text": f"Please enter an order question. {HELP_TEXT}", "rows": []}
+
+    if type(user_id) is not int or not 0 < user_id <= 2_147_483_647:
+        return {"text": "Please select a valid demo customer ID.", "rows": []}
 
     normalized_question = question.strip().lower()
 
@@ -135,7 +139,7 @@ def handle_order_question(user_id, question):
     )
 
     if not (
-        requested_order_id
+        requested_order_id is not None
         or asks_for_unavailable_data
         or asks_for_latest
         or asks_for_first

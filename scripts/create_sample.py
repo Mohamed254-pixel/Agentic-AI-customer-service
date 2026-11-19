@@ -23,15 +23,15 @@ con.execute("""
 """, [str(RAW / "orders.csv")])
 
 
-def save_table(table, filename):
+def save_table(table, filename, order_by):
     output = str(SAMPLE / filename).replace("'", "''")
     con.execute(
-        f"COPY {table} TO '{output}' "
+        f"COPY (SELECT * FROM {table} ORDER BY {order_by}) TO '{output}' "
         "(FORMAT CSV, HEADER TRUE)"
     )
 
 
-save_table("sample_orders", "orders.csv")
+save_table("sample_orders", "orders.csv", "hash(user_id), order_number, order_id")
 
 # 2. Retrieve purchased products for sampled orders
 for split in ["prior", "train"]:
@@ -46,7 +46,7 @@ for split in ["prior", "train"]:
         WHERE orders.eval_set = ?
     """, [str(RAW / filename), split])
 
-    save_table(f"sample_{split}", filename)
+    save_table(f"sample_{split}", filename, "order_id, add_to_cart_order, product_id")
 
 # 3. Keep only products used by sampled orders
 con.execute("""
@@ -60,7 +60,7 @@ con.execute("""
     )
 """, [str(RAW / "products.csv")])
 
-save_table("sample_products", "products.csv")
+save_table("sample_products", "products.csv", "product_id")
 
 # 4. Copy small reference tables
 for filename in ["aisles.csv", "departments.csv"]:
