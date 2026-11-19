@@ -1,214 +1,107 @@
-# Instacart Multi-Agent AI Customer Service Assistant
-
-**Agentic AI | San José State University**
-
-A multi-agent AI customer service assistant that uses historical Instacart purchasing data to answer customer questions, retrieve order history, and recommend grocery products.
+# Cartside — Agentic AI Customer Service
 
 ## Project Overview
 
-This project combines data engineering with agentic AI. We use Python and DuckDB to process a large e-commerce dataset, and integrates specialized agents using LangGraph and optional OpenAI calls.
+Cartside is a grocery customer-service prototype that routes chat requests to three LangGraph specialists. It looks up historical orders, recommends products from purchase data, and explains simulated support policies. The Streamlit workspace runs without an API key using an anonymized Instacart sample stored in DuckDB. The project began as a four-person team project for BUS4 118S at San José State University.
 
-### Dataset
+## Live Demo
 
-**Source:** [Instacart Market Basket Analysis](https://www.kaggle.com/datasets/psparks/instacart-market-basket-analysis)
+Public deployment is pending verification. [Deployment and release smoke test](DEPLOYMENT.md)
 
-| Dataset | Records |
-|---|---:|
-| Orders | 3,421,083 |
-| Prior order products | 32,434,489 |
-| Training order products | 1,384,617 |
-| Products | 49,688 |
-| Aisles | 134 |
-| Departments | 21 |
+## Architecture
 
-The dataset contains anonymized historical transactions. It does not include live delivery tracking, prices, or refund records.
-
-## AI Agent Architecture
-
-The system includes three specialized agents:
-
-1. **Order History Agent** — Retrieves historical customer orders and purchased items.
-2. **Product Recommendation Agent** — Recommends grocery products using purchasing patterns.
-3. **Customer Support Agent** — Answers customer questions using a clearly identified simulated support policy.
-
-A LangGraph router directs requests to the appropriate agent. MemorySaver keeps in-process conversation state; new chats, customer changes, and server restarts start fresh conversations.
-
-## Technology Stack
-
-- **Python:** Data processing and application logic
-- **DuckDB:** SQL analytics across millions of records
-- **Pandas:** Data exploration and validation
-- **OpenAI API:** Language model integration
-- **LangGraph:** Agent routing and orchestration
-- **MemorySaver:** Conversation memory
-- **Git and GitHub:** Version control and team collaboration
-
-## Project Structure
-
-```text
-Agentic-AI-customer-service/
-├── agents/
-│   ├── order_agent.py
-│   ├── product_agent.py
-│   ├── refund_agent.py
-│   └── router.py
-├── data/
-│   ├── raw/
-│   └── policies/
-│       └── refund_policy.txt
-├── scripts/
-│   ├── download_data.py
-│   ├── data_check.py
-│   └── data_quality.py
-├── main.py
-├── requirements.txt
-├── .env.example
-├── .gitignore
-└── README.md
+```mermaid
+flowchart TD
+    UI[Streamlit chat] --> Context[Customer-scoped conversation context]
+    Context <--> Memory[In-process LangGraph checkpoints]
+    Context --> Router{LangGraph router}
+    Router --> Orders[Order history]
+    Router --> Products[Product recommendations]
+    Router --> Support[Customer support]
+    Router --> Reply[Greeting or request guidance]
+    Orders --> SQL[(Read-only historical DuckDB)]
+    Products --> SQL
+    Products --> Prices[(Simulated price store)]
+    Support --> Policy[Checked-in simulated policy]
 ```
 
-## Getting Started
+Order replies are rendered from rows belonging to the selected customer. Recommendations are ranked in SQL and rendered from verified product IDs. In private OpenAI mode, the model can help route requests and select from the verified candidate IDs. Cartside supplies the factual order and policy content directly, reducing opportunities to invent order details or promise actions.
 
-### 1. Clone the repository
+## Tech Stack
+
+Python 3.13 · Streamlit · DuckDB · LangGraph and MemorySaver · pytest and Ruff · optional OpenAI via LangChain
+
+## Dataset and Data Engineering
+
+The source is the [Instacart Market Basket Analysis dataset](https://www.kaggle.com/datasets/psparks/instacart-market-basket-analysis). It includes roughly 3.4 million order records and 32.4 million prior basket rows, plus a separate training basket file. The checked-in sample contains 10,000 orders, 93,803 prior basket rows, 4,052 training basket rows and 12,207 products.
+
+```mermaid
+flowchart LR
+    Full[Full historical CSVs] --> Sample[Sample generator]
+    Sample --> CSV[Six bundled CSVs]
+    CSV --> Build[Typed ingestion and SQL validation]
+    Build --> DB[(Atomic sample DuckDB)]
+    DB --> Queries[Parameterized read-only queries]
+    DB --> Pricing[(Separate simulated pricing DuckDB)]
+```
+
+The builder checks headers, explicit column types, required values, unique keys, foreign-key relationships, basket positions and split membership. The first purchase can have a missing days-since-prior value. DuckDB executes joins, filters and aggregates in SQL. The Streamlit launch reads the bundled sample, and query results contain the selected customer's orders or catalog-level evidence.
+
+The sample generator selects prior and training orders by hashed customer ID, then order sequence. The 10,000-order cutoff can truncate a customer's history. Building from the checked-in CSVs reproduces the demo without downloading raw data. The separate `--dataset full` command is for offline analysis.
+
+## Agent Responsibilities
+
+| Agent | What it does | Evidence |
+| --- | --- | --- |
+| Order history | Finds available first, latest and specific orders. Checks order ownership and reports missing items or history. | Customer ID, order sequence and purchased product rows. |
+| Product recommendation | Suggests repeat purchases ranked by frequency and recency, co-purchases for a named product, or sample-wide popular items when history runs out. | Historical baskets and catalog records. |
+| Customer support | Explains the simulated return policy and directs visitors to the original service for real order help. | Checked-in policy and fixed capability messages. |
+
+## Key Features
+
+- Clickable starters for the latest order, personalized products, and order help.
+- Follow-up turns remember the referenced order and earlier suggestions. **New chat** and customer changes reset the conversation.
+- An **Orders** view shows historical baskets. The **Shopping list** stores selections in the browser session and totals simulated prices in integer cents.
+- A public configuration that makes zero paid API calls. Private OpenAI use is opt-in and loopback-only.
+
+## Testing and Reliability
+
+Local verification with Python 3.13 and Streamlit 1.67 passed **92 offline tests**. The suite covers SQL accuracy, startup from clean sample data, routing, multi-turn conversation, customer isolation, invalid inputs, recovery, and the three Streamlit views. Live OpenAI is outside the offline test run. GitHub Actions installs the runtime, builds the sample, runs Ruff and runs pytest.
+
+For customer **5117**, the latest available order is **1405149** and contains Lemon Yogurt, Blueberry Yoghurt and Original No Pulp 100% Florida Orange Juice. The first order is **1662937** and contains four products. The lookup uses `order_number` for chronology.
+
+## Local Setup
 
 ```bash
 git clone https://github.com/Mohamed254-pixel/Agentic-AI-customer-service.git
 cd Agentic-AI-customer-service
-```
-
-### 2. Create a virtual environment
-
-```bash
-python3 -m venv .venv
+python3.13 -m venv .venv
 source .venv/bin/activate
-```
-
-### 3. Install dependencies
-
-```bash
 python -m pip install -r requirements.txt
+DEMO_MODE=1 OPENAI_API_KEY= python -m streamlit run main.py
 ```
 
-### 4. Download the dataset
-
-Download the six CSV files from Kaggle and place them in:
-
-`data/raw/instacart/`
-
-Large dataset files are excluded from GitHub.
-
-### 5. Run data validation
-
-```bash
-python scripts/data_check.py
-python scripts/data_quality.py
-```
-
-## Development Progress
-
-### Run Cartside locally
-
-With your virtual environment activated, run:
-
-```bash
-python -m pip install -r requirements-preview.txt
-python scripts/build_db.py --dataset sample
-python -m streamlit run main.py
-```
-
-Open the localhost URL printed in the terminal. The preview includes a demo
-customer selector, a focused chat interface, and starter prompts for orders,
-recommendations, and simulated refunds. Order history is available in the sidebar.
-The sample database is built automatically on first launch; the explicit build
-command above is optional.
-
-Product photo assets are retained for future use but are not displayed in the
-chat layout. Photos are representative; the dataset does not verify historical
-brands or package sizes. Sources are recorded in `assets/products/sources.json`.
-
-- [x] Create GitHub repository
-- [x] Set up Python environment
-- [x] Download Instacart dataset
-- [x] Verify all six dataset row counts
-- [x] Validate order and product ID uniqueness
-- [x] Check initial missing values
-- [ ] Complete full data quality validation
-- [x] Create persistent DuckDB database
-- [x] Implement three agents
-- [x] Connect agents using LangGraph
-- [x] Implement MemorySaver
-- [x] Test offline conversations and agent responses
-- [x] Verify live OpenAI responses with a valid API key
-- [ ] Complete project presentation
-
-## Team Collaboration
-
-Developed as a four-member group project for BUS4 118S at San José State University.
-
-Team members contribute through GitHub branches and pull requests.
-
-## Project Status
-
-**In development:** Integrated agents verified in offline tests and a live OpenAI smoke test. Final team acceptance testing, submission evidence, and the presentation remain.
-
-### OpenAI mode and testing
-
-Copy `.env.example` to `.env`. For offline mode, keep `DEMO_MODE=1`.
-For OpenAI mode, set `DEMO_MODE=0` and supply your own `OPENAI_API_KEY`.
-Restart Streamlit after changing settings. Never commit `.env` or an API key.
-The app labels offline replies and falls back to database/policy responses if
-OpenAI is unavailable. The OpenAI API is required for the assignment's live AI
-requirement; offline mode is for development and does not satisfy it by itself.
-
-The refund policy is simulated, not Instacart's policy. No refunds, live tracking,
-live prices, payments, or order changes are available.
+The first app session initializes the sample automatically. To build and test explicitly:
 
 ```bash
 python -m pip install -r requirements-dev.txt
 python scripts/build_db.py --dataset sample
-DEMO_MODE=1 python -m pytest tests -q
+python -m ruff check --select E9,F63,F7,F82 .
+DEMO_MODE=1 OPENAI_API_KEY= python -m pytest -q
 ```
 
-Example three-turn order demo (customer `5117`):
-1. `What was in my latest order?`
-2. `Show that again`
-3. `What was in it?`
+For full historical analysis, place the six raw CSVs in `data/raw/instacart/` and run `python scripts/build_db.py --dataset full`. To download via the existing helper, install `kagglehub` and run `python scripts/download_data.py`. The full-data build is independent of the demo.
 
-Also try `Recommend bananas` and `What is the refund policy?`.
-Memory tests use both real local graph execution and a fake model that checks
-history delivery without making paid API calls. Arbitrary follow-up understanding
-is more limited in offline mode than OpenAI mode.
+## Deployment
 
-First-order follow-up example (customer `5117`): ask `What was in my latest
-order?`, then `How bout my first order?`. The latest order is `1405149`; the
-first is `1662937`. Chronology uses `order_number`, not the numerical order ID.
-OpenAI rewrites successful order lookups conversationally while preserving
-product names and rejecting newly introduced numeric details. This guard is
-not a complete factual verifier; final team testing is still required.
+Streamlit Community Cloud uses `main.py`, Python 3.13 and the root `requirements.txt`. See [Deployment](DEPLOYMENT.md) for the public release steps, smoke test and private OpenAI configuration.
 
-### Hosting
+## Limitations
 
-See [DEPLOYMENT.md](DEPLOYMENT.md) for Streamlit Community Cloud setup.
-Use `.streamlit/secrets.toml.example` as the format for Cloud Secrets; never
-commit a real secrets file.
+The demo uses anonymized historical IDs and scopes chat context to the selected demo customer. Anyone can select any sample customer. Sessions and shopping lists are temporary. Prices and support policies are simulated. The app has no live inventory, payments, delivery tracking, order editing, verified ingredient safety or refund processing.
 
-### Simulated pricing
+## Future Improvements
 
-`db/pricing.py` maintains a separate generated DuckDB file,
-`data/processed/instacart_sample_pricing.duckdb`. The original CSVs and sample
-product/order tables stay unchanged. Prices are deterministic SHA-256 values
-keyed by product ID (USD $0.99–$19.99 per catalog item); they are illustrative,
-not market estimates or historical purchase prices. Existing stored prices
-are preserved when the catalog gains products.
-
-Recommendations and shopping lists label prices as simulated. Shopping totals
-use stored integer cents, one unit per selected product, including checked items;
-tax and delivery are excluded. Checking an item marks progress, not payment.
-The shopping list is session-only. A pricing lookup does not consume the next
-set of recommendations. Stock and live price information remain unavailable.
-
-The app creates this pricing database offline on startup, including on Streamlit
-Community Cloud. Generated databases remain ignored by Git. Cloud storage is
-replaceable: restarts can regenerate the same prices without network downloads
-or new secrets. `get_prices` / `quote_products` provide the boundary for a future
-real pricing provider; that integration has not been implemented.
+- Evaluate recommendation quality on a temporal holdout using the full historical dataset.
+- Track changes in SQL query plans as dataset size grows.
+- Add browser-driven release checks for desktop and mobile layouts.

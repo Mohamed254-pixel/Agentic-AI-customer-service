@@ -1,4 +1,10 @@
-# App dependencies and data-preparation tools (transitive dependencies resolved by pip).
--r requirements-preview.txt
-pandas==3.0.6
-kagglehub==1.0.2
+# Dependencies for the Streamlit app and Community Cloud.
+streamlit==1.67.0
+duckdb==1.5.6
+langgraph==1.2.16
+langchain-openai==1.7.2
+python-dotenv==1.2.4
+
+# Minimum patched versions for Streamlit HTTP and image dependencies.
+certifi>=2026.10.18
+pillow>=13.0.0
