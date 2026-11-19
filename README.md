@@ -8,6 +8,14 @@ Cartside is a grocery customer-service prototype that routes chat requests to th
 
 Public deployment is pending verification. [Deployment and release smoke test](DEPLOYMENT.md)
 
+## Workspace preview
+
+Screenshots from the local Streamlit preview using the bundled sample data.
+
+![Cartside desktop overview showing customer 5117, the latest recorded order, and the shopping assistant](docs/screenshots/desktop-overview.png)
+
+[Recommendations](docs/screenshots/desktop-recommendations.png) · [Order history](docs/screenshots/desktop-orders.png) · [Shopping list](docs/screenshots/desktop-shopping-list.png) · [Phone layout](docs/screenshots/mobile-assistant.png)
+
 ## Architecture
 
 ```mermaid
@@ -66,7 +74,7 @@ The sample generator selects prior and training orders by hashed customer ID, th
 
 ## Testing and Reliability
 
-Local verification with Python 3.13 and Streamlit 1.67 passed **92 offline tests**. The suite covers SQL accuracy, startup from clean sample data, routing, multi-turn conversation, customer isolation, invalid inputs, recovery, and the three Streamlit views. Live OpenAI is outside the offline test run. GitHub Actions installs the runtime, builds the sample, runs Ruff and runs pytest.
+Local verification with Python 3.13 and Streamlit 1.67 passed **95 offline tests**. The suite covers SQL accuracy, startup from clean sample data, routing, multi-turn conversation, customer isolation, invalid inputs, recovery, and the three Streamlit views. Live OpenAI is outside the offline test run. GitHub Actions installs the runtime, builds the sample, runs Ruff and runs pytest.
 
 For customer **5117**, the latest available order is **1405149** and contains Lemon Yogurt, Blueberry Yoghurt and Original No Pulp 100% Florida Orange Juice. The first order is **1662937** and contains four products. The lookup uses `order_number` for chronology.
 
