@@ -129,11 +129,39 @@ def _explicit_route(question: str):
     return None
 
 
-def _smalltalk(question: str):
-    return bool(re.fullmatch(
-        r"(?:hi|hello|hey|thanks|thank you|thx|ty|bye|goodbye|ok|okay|cool|nice|alright|aight|ight|how are you)(?: yo| bro| fam)?[!.?\s]*",
-        normalize_request(question).strip(),
-    ))
+GREETING = r"(?:h+i+|h+e+y+|h+e+l+o+|hiya|yo+|sup|wassup|wssup|whatsup|what'?s up|what'?s good|good (?:morning|afternoon|evening))"
+CHECK_IN = r"(?:how (?:are (?:you|u)|(?:are )?(?:you|u) doin(?:g)?'?|(?:is it|ist|it'?s|s) goin(?:g)?'?)|how'?s it goin(?:g)?'?)"
+SOCIAL_PATTERNS = {
+    "check_in": re.compile(rf"(?:{GREETING} )?{CHECK_IN}"),
+    "greeting": re.compile(GREETING + r"(?: there| cartside| yo| bro| fam)?"),
+    "thanks": re.compile(r"(?:thanks(?: a lot| so much)?|thank (?:you|u)(?: so much)?|thx|ty|tysm|appreciate it)(?: yo| bro| fam| cartside)?"),
+    "goodbye": re.compile(r"bye(?: bye)?|goodbye|see (?:you|ya)(?: later)?|later|take care"),
+    "acknowledgment": re.compile(r"ok(?:ay)?|cool|nice|alright|aight|ight|got it|sounds good"),
+    "capabilities": re.compile(r"what (?:can you (?:do|help (?:me )?with)|do you do)|who are you"),
+}
+SOCIAL_REPLIES = {
+    "check_in": ("Hey! I'm here to help. What's on your mind?", "Ready to help with your groceries. What's up?"),
+    "greeting": ("Hey! What can I help you with?", "Hi there! What's on your shopping list today?", "Hey! Need a hand with anything?"),
+    "thanks": ("You're welcome!", "Anytime!"),
+    "goodbye": ("Take care!", "See you next time!"),
+    "acknowledgment": ("Got it.", "Sounds good."),
+    "capabilities": ("I can look up past orders, suggest groceries, and explain Cartside's simulated support policies.",),
+}
+OFFLINE_LIMITATION = "I stick to grocery help in demo mode. I can look up past orders or suggest something for your next shop."
+
+
+def _social_intent(question: str) -> str | None:
+    """Match whole social messages so a greeting can't swallow a service request."""
+    text = " ".join(re.sub(r"[^a-z0-9'\s]", " ", question.lower().replace("’", "'")).split())
+    return next((intent for intent, pattern in SOCIAL_PATTERNS.items() if pattern.fullmatch(text)), None)
+
+
+def _social_reply(intent, messages):
+    """Rotate replies within a thread without random or shared state."""
+    replies = SOCIAL_REPLIES[intent]
+    previous = next((message.content for message in reversed(messages)
+                     if isinstance(message, AIMessage) and message.content in replies), None)
+    return replies[(replies.index(previous) + 1) % len(replies)] if previous else replies[0]
 
 
 def _general_request(question: str):
@@ -155,6 +183,8 @@ def _product_followup(question: str):
 
 
 def _context_route(question: str, state):
+    if _social_intent(question):
+        return "SMALLTALK"
     route = _explicit_route(question)
     general_domain = re.search(
         r"\b(python|javascript|programming|photosynthesis|math|algebra|homework|movie|movies|music|song|songs|poem|joke|capital|weather|news)\b",
@@ -165,8 +195,6 @@ def _context_route(question: str, state):
         return "SMALLTALK"
     if route:
         return route
-    if _smalltalk(question):
-        return "SMALLTALK"
     topic = state.get("active_route", state.get("route"))
     # Substantive follow-ups stay with their specialist. A thanks/greeting
     # doesn't erase this topic or product exclusions/history.
@@ -250,7 +278,7 @@ def build_router(model=None, debug: bool = False, *, allow_openai: bool = True):
         if debug:
             print(f"Router selected: {route}")
         return {"route": route, "effective_question": effective, "mode": mode,
-                "active_route": topic if route == "SMALLTALK" and _smalltalk(question) else route}
+                "active_route": topic if route == "SMALLTALK" and _social_intent(question) else route}
 
     def conversational_order(state, result):
         """Optionally add a fixed acknowledgment to the rendered database facts."""
@@ -296,16 +324,12 @@ def build_router(model=None, debug: bool = False, *, allow_openai: bool = True):
         return {"messages": [AIMessage(content=answer)], "mode": "Local fallback (OpenAI unavailable)" if "OpenAI is unavailable" in answer else state.get("mode", "Local demo")}
 
     def smalltalk_node(state: RouterState):
-        text = normalize_request(_last_user_message(state))
-        if re.fullmatch(r"(?:thanks|thank you|thx|ty)(?: yo| bro| fam)?[!.?\s]*", text):
-            no_model_answer = "You're welcome!"
-        elif _smalltalk(text):
-            no_model_answer = "Hey! What can I help you with?"
-        else:
-            no_model_answer = "I'm in demo mode. Try asking about your latest order, grocery recommendations, or simulated support policies."
+        intent = _social_intent(_last_user_message(state))
         response_mode = state.get("mode", "Local demo")
-        if model is None:
-            answer = no_model_answer
+        if intent:
+            answer = _social_reply(intent, state.get("messages", []))
+        elif model is None:
+            answer = OFFLINE_LIMITATION
         else:
             try:
                 result = model.invoke([
