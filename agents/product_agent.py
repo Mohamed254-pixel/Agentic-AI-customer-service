@@ -96,14 +96,16 @@ def _database_path() -> Path:
     return Path(configured).expanduser() if configured else DEFAULT_DB
 
 
-def _find_product(con, question: str) -> dict[str, Any] | None:
+def _find_product(con, question: str, catalog=None) -> dict[str, Any] | None:
     """Match positive words only; never use a rejected item as the new seed."""
     positive, _ = parse_exclusions(question)
     query_words = _words(positive)
     meaningful = {w for w in query_words if w not in set(_words(' '.join(STOP_WORDS)))}
     if not meaningful:
         return None
-    rows = con.execute('SELECT product_id, product_name, aisle_id FROM products ORDER BY product_id').fetchall()
+    rows = catalog if catalog is not None else con.execute(
+        'SELECT product_id, product_name, aisle_id FROM products'
+    ).fetchall()
     matches = []
     phrase = ' ' + ' '.join(query_words) + ' '
     raw_phrase = ' ' + ' '.join(re.findall(r'[a-z0-9]+', normalize_request(positive))) + ' '
@@ -133,9 +135,12 @@ def is_product_reference(question: str) -> bool:
         return False
 
 
+HISTORY_REQUEST = re.compile(r"\b(?:purchase history|purchasing history|order history|past orders|what i (?:bought|buy))\b")
+
+
 def find_recommendations(question: str, limit: int = 5, *, excluded_products=None,
                          previously_suggested_ids=None, seed_product_id=None,
-                         allow_general: bool = False) -> dict[str, Any]:
+                         allow_general: bool = False, customer_id: int | None = None) -> dict[str, Any]:
     """Rank verified products and filter exclusions/history BEFORE applying limit."""
     if not isinstance(limit, int) or not 1 <= limit <= 100:
         raise ValueError('limit must be between 1 and 100')
@@ -148,7 +153,7 @@ def find_recommendations(question: str, limit: int = 5, *, excluded_products=Non
     with duckdb.connect(str(db_path), read_only=True) as con:
         catalog = con.execute('SELECT product_id, product_name, aisle_id FROM products').fetchall()
         by_id = {pid: (name, aisle) for pid, name, aisle in catalog}
-        seed = _find_product(con, positive)
+        seed = _find_product(con, positive, catalog)
         if seed is None and seed_product_id in by_id:
             name, aisle = by_id[seed_product_id]
             seed = {'product_id': seed_product_id, 'product_name': name, 'aisle_id': aisle}
@@ -187,14 +192,29 @@ def find_recommendations(question: str, limit: int = 5, *, excluded_products=Non
                         if aisle == seed['aisle_id'] and eligible(pid, name)]
                 method = 'same_aisle'
         else:
-            rows = con.execute(baskets + '''
-                SELECT p.product_id, p.product_name, COUNT(DISTINCT b.order_id) AS orders
-                FROM baskets b JOIN products p ON p.product_id=b.product_id
-                GROUP BY p.product_id, p.product_name
-                ORDER BY orders DESC, p.product_name, p.product_id
-            ''').fetchall()
-            rows = [r for r in rows if eligible(r[0], r[1])]
             method = 'popular_in_sample'
+            rows = []
+            if type(customer_id) is int and 0 < customer_id <= 2_147_483_647:
+                rows = con.execute(baskets + '''
+                    SELECT p.product_id, p.product_name, COUNT(*) AS purchases
+                    FROM orders o
+                    JOIN baskets b ON b.order_id = o.order_id
+                    JOIN products p ON p.product_id = b.product_id
+                    WHERE o.user_id = ?
+                    GROUP BY p.product_id, p.product_name
+                    ORDER BY purchases DESC, MAX(o.order_number) DESC, p.product_name, p.product_id
+                ''', [customer_id]).fetchall()
+                rows = [r for r in rows if eligible(r[0], r[1])]
+                if rows:
+                    method = 'customer_history'
+            if not rows:
+                rows = con.execute(baskets + '''
+                    SELECT p.product_id, p.product_name, COUNT(DISTINCT b.order_id) AS orders
+                    FROM baskets b JOIN products p ON p.product_id=b.product_id
+                    GROUP BY p.product_id, p.product_name
+                    ORDER BY orders DESC, p.product_name, p.product_id
+                ''').fetchall()
+                rows = [r for r in rows if eligible(r[0], r[1])]
         # Some datasets contain distinct IDs with identical names; show each name once.
         unique, names = [], set()
         for pid, name, count in rows:
@@ -225,11 +245,11 @@ def _select_verified_ids(result, question, messages, model=None, use_ai=True):
         else:
             load_dotenv(ROOT / '.env')
             key = os.getenv('OPENAI_API_KEY')
-            if not key or os.getenv('DEMO_MODE', '0') == '1':
+            if not key or os.getenv('DEMO_MODE') != '0':
                 return fallback, True
-            client = OpenAI(api_key=key, timeout=20, max_retries=1)
+            client = OpenAI(api_key=key, timeout=15, max_retries=0)
             response = client.chat.completions.create(
-                model=os.getenv('OPENAI_MODEL', 'gpt-4o-mini'), temperature=0,
+                model=os.getenv('OPENAI_MODEL', 'gpt-4o-mini'), temperature=0, max_completion_tokens=400,
                 response_format={'type': 'json_object'},
                 messages=[{'role': 'system', 'content': CHAT_STYLE + '\n' + SYSTEM_PROMPT},
                           {'role': 'user', 'content': prompt}])
@@ -253,6 +273,8 @@ def product_turn(question: str, context=None, *, messages=None, model=None, use_
     excluded = list(dict.fromkeys([*context.get('excluded_products', []), *added_exclusions]))
     seen = list(context.get('suggested_product_ids', []))
     normalized = normalize_request(question)
+    history_request = bool(HISTORY_REQUEST.search(positive))
+    positive = HISTORY_REQUEST.sub('', positive)
     meaningful = {w for w in _words(positive) if w not in set(_words(' '.join(STOP_WORDS)))}
     previous_ids = context.get('last_suggested_product_ids', [])
     recall = (previous_ids and not added_exclusions and not re.search(r"\b(nah|nope|no|not)\b", normalized)
@@ -269,7 +291,8 @@ def product_turn(question: str, context=None, *, messages=None, model=None, use_
         method = context.get('recommendation_method')
         explanation = ("I picked these because they were bought with the item you asked about in past orders."
                        if method == 'frequently_bought_together' else "These share a grocery aisle with the item you asked about."
-                       if method == 'same_aisle' else "These are popular in the sample order history.")
+                       if method == 'same_aisle' else "These appeared in your sample purchase history."
+                       if method == 'customer_history' else "These are popular in the sample order history.")
         if 'which one' in normalized:
             explanation += " These prices are simulated, and I don't have verified ingredient details to say which is best for you."
         text = explanation + '\n\n' + recommendation_lines(selected, _database_path())
@@ -297,10 +320,13 @@ def product_turn(question: str, context=None, *, messages=None, model=None, use_
                 'seed_product_id': context.get('seed_product_id'), 'product_question': question,
                 'recommendations': [], 'ai_fallback': False}
     # A generic request or a constraint-only follow-up can use popular verified items.
-    allow_general = not meaningful or bool(added_exclusions)
-    result = find_recommendations(question, limit=20, excluded_products=excluded,
-        previously_suggested_ids=seen, seed_product_id=context.get('seed_product_id') if not meaningful else None,
-        allow_general=allow_general)
+    use_history = history_request or (
+        not meaningful and context.get('recommendation_method') == 'customer_history'
+    )
+    allow_general = use_history or not meaningful or bool(added_exclusions)
+    result = find_recommendations(HISTORY_REQUEST.sub('', question.lower()) if history_request else question, limit=20, excluded_products=excluded,
+        previously_suggested_ids=seen, seed_product_id=context.get('seed_product_id') if not meaningful and not history_request else None,
+        allow_general=allow_general, customer_id=context.get('user_id') if use_history else None)
     updates = {'excluded_products': excluded, 'suggested_product_ids': seen,
                'last_suggested_product_ids': [], 'seed_product_id': result['seed_product_id'],
                'product_question': question, 'recommendations': []}
@@ -314,7 +340,12 @@ def product_turn(question: str, context=None, *, messages=None, model=None, use_
     evidence = {
         'frequently_bought_together': f"These were bought with {result['matched_product']} in past orders.",
         'same_aisle': f"These share a grocery aisle with {result['matched_product']}.",
-        'popular_in_sample': 'These are popular items in the sample order history.',
+        'popular_in_sample': (
+            'There are no more matching items in your available purchase history. '
+            'These are popular items across the sample.' if use_history
+            else 'These are popular items in the sample order history.'
+        ),
+        'customer_history': 'These are items you bought in the sample, ranked by purchase frequency and recency.',
     }[result['method']]
     if added_exclusions:
         opening = "Got it — I'll leave those out. Here are some alternatives:"

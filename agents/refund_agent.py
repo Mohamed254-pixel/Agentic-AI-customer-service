@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from typing import Annotated, Literal, TypedDict
 
@@ -22,42 +23,48 @@ class AgentState(TypedDict, total=False):
     answer: str
 
 
-SYSTEM_PROMPT = """You are Cartside, a friendly customer-service and sales assistant for Cartside.
-You must be concise, accurate, and helpful. Use only the store information supplied by the
-specialist agent. If information is missing, say what you need and never invent an order,
-refund approval, price, or delivery date. Always identify the policy as simulated; never claim a refund or order change was completed. Keep the conversation context in mind."""
-
-REFUND_AGENT_PROMPT = """You are Cartside's refund-policy specialist.
-Explain the policy clearly and politely. Do not guarantee that a refund will be approved.
-A rejected grocery suggestion ("nah", "something else", "no milk") is not a
-refund request. Do not turn product preferences into refund eligibility advice;
-product selection belongs to the recommendation agent.
-Use only the policy facts provided. Ask for missing details such as the order number,
-delivery date, whether the item is unused, and whether it was a sale item. If the case is
-damaged, unusual, outside the policy, or unclear, recommend human review. Never ask for a
-full credit-card number or other unnecessary sensitive information."""
-
 POLICY_PATH = Path(__file__).resolve().parents[1] / "data/policies/refund_policy.txt"
 REFUND_POLICY = POLICY_PATH.read_text(encoding="utf-8").strip()
 
 
 def handle_refund_question(messages, model=None):
-    """Explain a clearly simulated policy using the saved conversation."""
-    fallback = "Simulated Cartside policy (class demo):\n\n" + REFUND_POLICY
-    if model is None:
-        return fallback
-    try:
-        result = model.invoke([
-            SystemMessage(content=CHAT_STYLE + "\n" + SYSTEM_PROMPT),
-            SystemMessage(content=REFUND_AGENT_PROMPT + "\nSIMULATED POLICY:\n" + REFUND_POLICY),
-            *messages,
-        ])
-        answer = str(result.content)
-        if "simulated" not in answer.lower() and "demo" not in answer.lower():
-            answer = "For this demo's simulated policy: " + answer
-        return answer
-    except Exception:
-        return fallback + "\n\nOpenAI is unavailable; showing the policy directly."
+    """Use fixed policy text and let the optional model select a support topic."""
+    question = next((str(m.content) for m in reversed(messages) if isinstance(m, HumanMessage)), "")
+    topic = "refund"
+    if re.search(r"\b(track|tracking|delivery status|where is my order|shipped|arriv)\w*\b", question, re.I):
+        topic = "tracking"
+    if re.search(r"\b(cancel|change|edit|modify|update|place|payment|billing|charged)\w*\b", question, re.I):
+        topic = "changes"
+    if re.search(r"\b(help|support|contact)\b", question, re.I):
+        topic = "help"
+    if re.search(r"\b(refund|return|exchange|damaged|spoiled|unused|sale)\w*\b", question, re.I):
+        topic = "refund"
+
+    fallback = ""
+    if model is not None:
+        try:
+            response = model.invoke([
+                SystemMessage(content=CHAT_STYLE + "\nReturn one support label: refund, tracking, changes, or help. "
+                              "Cartside will display the simulated policy directly."),
+                *messages[-12:],
+            ])
+            if topic == "refund" and not re.search(r"\b(refund|return|exchange)\w*\b", question, re.I):
+                topic = {"tracking": "tracking", "changes": "changes", "help": "help"}.get(
+                    str(response.content).strip().lower(), topic
+                )
+        except Exception:
+            fallback = "\n\nOpenAI is unavailable; showing the policy directly."
+
+    introduction = {
+        "refund": "",
+        "tracking": "Live delivery tracking is unavailable. Ask to see your latest historical order.\n\n",
+        "changes": "Cartside cannot change or cancel orders, take payments, or issue refunds. "
+                   "For a real order, use the support channel where you placed it.\n\n",
+        "help": "For past items, ask about your latest order or open Orders. For a real delivery, "
+                "order change, or refund, contact the service where you ordered. "
+                "Cartside can explain the simulated policy below.\n\n",
+    }[topic]
+    return introduction + "Simulated Cartside policy (portfolio demo):\n\n" + REFUND_POLICY + fallback
 
 
 def route_intent(text: str) -> Intent:
@@ -93,19 +100,13 @@ def mock_answer(intent: Intent, state: AgentState) -> str:
 
 def make_specialist(intent: Intent):
     def specialist_node(state: AgentState) -> AgentState:
-        if os.getenv("DEMO_MODE", "0") == "1" or not os.getenv("OPENAI_API_KEY"):
-            answer = mock_answer(intent, state)
-        else:
+        if intent == "refund_policy" and os.getenv("DEMO_MODE") == "0" and os.getenv("OPENAI_API_KEY"):
             from langchain_openai import ChatOpenAI
-            llm = ChatOpenAI(model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"), temperature=0, timeout=20, max_retries=1)
-            specialist_prompt = REFUND_AGENT_PROMPT if intent == "refund_policy" else f"You are the {intent.replace('_', ' ')} specialist."
-            facts = REFUND_POLICY if intent == "refund_policy" else "Use the main Cartside router for historical orders and grocery recommendations. No live tracking or prices are available."
-            prompt = [
-                SystemMessage(content=SYSTEM_PROMPT),
-                SystemMessage(content=f"{specialist_prompt}\nStore facts:\n{facts}"),
-                *state.get("messages", []),
-            ]
-            answer = str(llm.invoke(prompt).content)
+            model = ChatOpenAI(model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
+                               temperature=0, timeout=15, max_retries=0, max_tokens=400)
+            answer = handle_refund_question(state.get("messages", []), model=model)
+        else:
+            answer = mock_answer(intent, state)
         return {"answer": answer, "messages": [AIMessage(content=answer)]}
     return specialist_node
 

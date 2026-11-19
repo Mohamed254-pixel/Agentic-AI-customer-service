@@ -63,3 +63,28 @@ def get_order_products(order_id):
 
         columns = [col[0] for col in result.description]
         return [dict(zip(columns, row)) for row in result.fetchall()]
+
+
+def get_customer_order_items(user_id):
+    """Read all of one customer's available baskets in a single SQL query."""
+    with duckdb.connect(str(DB), read_only=True) as con:
+        rows = con.execute("""
+            WITH customer_orders AS (
+                SELECT order_id, eval_set FROM orders WHERE user_id = ?
+            ), items AS (
+                SELECT i.order_id, i.product_id, i.add_to_cart_order
+                FROM order_products__prior i JOIN customer_orders o USING (order_id)
+                WHERE o.eval_set = 'prior'
+                UNION ALL
+                SELECT i.order_id, i.product_id, i.add_to_cart_order
+                FROM order_products__train i JOIN customer_orders o USING (order_id)
+                WHERE o.eval_set = 'train'
+            )
+            SELECT i.order_id, p.product_name, i.add_to_cart_order
+            FROM items i JOIN products p USING (product_id)
+            ORDER BY i.order_id, i.add_to_cart_order
+        """, [user_id]).fetchall()
+    result = {}
+    for order_id, product_name, position in rows:
+        result.setdefault(order_id, []).append({"product_name": product_name, "add_to_cart_order": position})
+    return result
