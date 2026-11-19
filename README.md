@@ -49,7 +49,7 @@ Python 3.13 · Streamlit · DuckDB · LangGraph and MemorySaver · pytest and Ru
 
 ## Dataset and Data Engineering
 
-The source is the [Instacart Market Basket Analysis dataset](https://www.kaggle.com/datasets/psparks/instacart-market-basket-analysis). It includes roughly 3.4 million order records and 32.4 million prior basket rows, plus a separate training basket file. The checked-in sample contains 10,000 orders, 93,803 prior basket rows, 4,052 training basket rows and 12,207 products.
+The Instacart Market Basket Analysis dataset includes roughly 3.4 million order records and 32.4 million prior basket rows, plus a separate training basket file. The [bundled sample](data/sample/) contains 10,000 orders, 93,803 prior basket rows, 4,052 training basket rows and 12,207 products.
 
 ```mermaid
 flowchart LR
@@ -107,7 +107,7 @@ python -m ruff check --select E9,F63,F7,F82 .
 DEMO_MODE=1 OPENAI_API_KEY= python -m pytest -q
 ```
 
-For full historical analysis, place the six raw CSVs in `data/raw/instacart/` and run `python scripts/build_db.py --dataset full`. To download via the existing helper, install `kagglehub` and run `python scripts/download_data.py`. The full-data build is independent of the demo.
+For full historical analysis, place the six raw CSVs in `data/raw/instacart/` and run `python scripts/build_db.py --dataset full`. The optional `scripts/download_data.py` helper depends on an external Kaggle mirror. The full-data build is independent of the demo.
 
 ## Deployment
 
